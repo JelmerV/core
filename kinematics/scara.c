@@ -27,28 +27,18 @@
 
 #include "../hal.h"
 #include "../settings.h"
+#include "../nvs_buffer.h"
 #include "../nuts_bolts.h"
 #include "../planner.h"
 #include "../kinematics.h"
 #include "../report.h"
 #include "../system.h"
 
-#include "scara.h"
-
 // some config stuff
 #define MAX_SEG_LENGTH_MM 2.0f // segmenting long lines due to non-linear motions [mm]
 
-// todo: Make configurable as settings
-#define SCARA_L1 500.0f // Length of first arm [mm]
-#define SCARA_L2 450.0f // Length of second arm [mm]
-
 #define A_MOTOR X_AXIS // Lower motor (l1)
 #define B_MOTOR Y_AXIS // Upper motor (l2)
-
-// if defined, q2 is absolute joint angle, otherwise relative
-#define SCARA_ABSOLUTE_JOINT_ANGLES On
-// if defined, elbow up, otherwise elbow down robot configuration
-#define SCARA_ELBOW_UP On
 
 // struct to hold the xy coordinates
 typedef struct {
@@ -62,17 +52,25 @@ typedef struct {
     float q2;
 } q_t;
 
+#define ABSOLUTE_JOINT_ANGLES_BIT   bit(1)
+#define ELBOW_UP_CONFIGURATION_BIT  bit(2)
+#define COUPLE_ON_HOMING_BIT        bit(3)
 // struct to hold the machine parameters
 typedef struct {
+    uint8_t config;
     float l1;
     float l2;
-} machine_t;
-static machine_t machine = {0};
+    float home1_offset;
+    float home2_offset;
+} scara_settings_t;
+static scara_settings_t machine = {0}, scara_settings;
 
 // global variables
 static bool jog_cancel = false;
 static on_report_options_ptr on_report_options;
 static on_realtime_report_ptr on_realtime_report;
+static on_homing_completed_ptr on_homing_completed;
+static nvs_address_t nvs_address;
 
 
 // ************************ Kinematics Calculations ****************************//
@@ -95,19 +93,19 @@ static q_t xy_to_q(float x, float y) {
         float cos_q12 = (r_sq - machine.l1*machine.l1 - machine.l2*machine.l2) / (2.0f * machine.l1 * machine.l2);
         float q12 = acosf(cos_q12); //relative angle between l1 and l2
         float beta = atan2f(machine.l2*sinf(q12), machine.l1+machine.l2*cos_q12); //angle between l1 and r
-        
-        #if SCARA_ELBOW_UP
+
+        if (bit_istrue(machine.config, ABSOLUTE_JOINT_ANGLES_BIT)) {
             q.q1 = atan2f(y, x) + beta;
             q12 = -q12;
-        #else
+        } else {
             q.q1 = atan2f(y, x) - beta;
-        #endif
+        }
 
-        #if SCARA_ABSOLUTE_JOINT_ANGLES
+        if (bit_istrue(machine.config, ELBOW_UP_CONFIGURATION_BIT)) {
             q.q2 = q.q1 + q12;
-        #else
+        } else {
             q.q2 = q12;
-        #endif
+        }
 
         //rad to degrees
         q.q1 *= DEGRAD;
@@ -116,6 +114,23 @@ static q_t xy_to_q(float x, float y) {
     return q;
 }
 
+
+// finds the max rectangle that fits in the work envelope
+static void get_cuboid_envelope (void)
+{
+    float r_max = machine.l1 + machine.l2;
+    float r_min = fabsf(machine.l1 - machine.l2);
+
+    // max rectangle to fit a semicircle
+    float max_x = r_max / SQRT2;
+    float max_y = r_max / SQRT2;
+    
+    // using the lower hemisphere. Make config option?
+    sys.work_envelope.min[X_AXIS] = -max_x;
+    sys.work_envelope.min[Y_AXIS] = -max_y;
+    sys.work_envelope.max[X_AXIS] = -r_min;
+    sys.work_envelope.max[Y_AXIS] = max_y;
+}
 
 // *********************** required grblHAL Kinematics functions ************************ //
 
@@ -173,7 +188,7 @@ static float *scara_transform_from_cartesian(float *target_q, float *position_xy
     // Check if out of reach
     if (isnan(q.q1) || isnan(q.q2)) {
         // trigger soft limit
-        system_raise_alarm(Alarm_SoftLimit);
+        //system_raise_alarm(Alarm_SoftLimit);
         return NULL;
     }
 
@@ -244,8 +259,8 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
         iterations++;
 
         // print debug info
-        snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d,do_segments=%d,dist=%f,delta=%f,%f,%f\n", iterations, do_segments, distance, delta.x, delta.y, delta.z);
-        hal.stream.write(msgOut);
+        // snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d,do_segments=%d,dist=%f,delta=%f,%f,%f\n", iterations, do_segments, distance, delta.x, delta.y, delta.z);
+        // hal.stream.write(msgOut);
     } 
     else {
         // return next segment
@@ -282,34 +297,11 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
 static uint_fast8_t scara_limits_get_axis_mask (uint_fast8_t idx)
 {   
     return bit(idx);
-    // hal.stream.write("scara_limits_get_axis_mask\n");
-    // if (idx == A_MOTOR || idx == B_MOTOR) { // Always home A and B together
-    //     return (bit(X_AXIS) | bit(Y_AXIS));
-    // } else {
-    //     return bit(idx);
-    // }
 }
 
 static void scara_limits_set_target_pos (uint_fast8_t idx)
 {
-    hal.stream.write("scara_limits_set_target_pos\n");
-    xy_t xy;
-    xy.x = sys.position[X_AXIS] / settings.axis[A_MOTOR].steps_per_mm;
-    xy.y = sys.position[Y_AXIS] / settings.axis[B_MOTOR].steps_per_mm;
-
-    q_t q = xy_to_q(xy.x, xy.y);
-
-    switch(idx) {
-        case X_AXIS:
-            sys.position[A_MOTOR] = q.q1 * settings.axis[A_MOTOR].steps_per_mm;
-            break;
-        case Y_AXIS:
-            sys.position[B_MOTOR] = q.q2 * settings.axis[B_MOTOR].steps_per_mm;
-            break;
-        default:
-            sys.position[idx] = 0;
-            break;
-    }
+    sys.position[idx] = 0;
 }
 
 // Set machine positions for homed limit switches. Don't update non-homed axes.
@@ -318,36 +310,124 @@ static void scara_limits_set_machine_positions (axes_signals_t cycle)
 {
     hal.stream.write("scara_limits_set_machine_positions\n");
 
-    xy_t xy;
-    xy.x = sys.position[X_AXIS] / settings.axis[A_MOTOR].steps_per_mm;
-    xy.y = sys.position[Y_AXIS] / settings.axis[B_MOTOR].steps_per_mm;
-    q_t q;
-
+    int32_t pulloff = settings.homing.pulloff;
     uint_fast8_t idx = N_AXIS;
-    int32_t pulloff = 0;
-    if (cycle.mask & bit(--idx)) do {
-        if (settings.homing.flags.force_set_origin) {
-            pulloff = bit_istrue(settings.homing.dir_mask.value, bit(idx))
-                        ? lroundf((settings.axis[idx].max_travel + settings.homing.pulloff) * settings.axis[idx].steps_per_mm)
-                        : lroundf(-settings.homing.pulloff * settings.axis[idx].steps_per_mm);
-        }
-        
-        switch(--idx) {
-            case X_AXIS:
-                q = xy_to_q(xy.x, xy.y);
-                sys.position[A_MOTOR] = q.q1 * settings.axis[A_MOTOR].steps_per_mm + pulloff;
-                break;
-            case Y_AXIS:
-                q = xy_to_q(xy.x, xy.y);
-                sys.position[B_MOTOR] = q.q2 * settings.axis[B_MOTOR].steps_per_mm + pulloff;
-                break;
-            default:
+    if(settings.homing.flags.force_set_origin || true) {
+        do {
+            // forced to set pos to 0
+            if(cycle.mask & bit(--idx)) {
                 sys.position[idx] = 0;
-                break;
+                sys.home_position[idx] = 0.0f;
+            }
+        } while(idx);
+    } else do {
+        if(cycle.mask & bit(--idx)) {
+            float pulloff = settings.homing.pulloff;
+            if (bit_istrue(settings.homing.dir_mask.value, bit(idx)))
+                pulloff = -pulloff;
+            switch(idx) {
+                case A_MOTOR:
+                    sys.position[A_MOTOR] = lroundf((machine.home1_offset + pulloff) * settings.axis[A_MOTOR].steps_per_mm);
+                    break;
+                case B_MOTOR:
+                    sys.position[B_MOTOR] = lroundf((machine.home2_offset + pulloff) * settings.axis[B_MOTOR].steps_per_mm);
+                    break;
+                default:
+                    if bit_istrue(settings.homing.dir_mask.value, bit(idx))
+                        sys.position[idx] = lroundf((settings.axis[idx].max_travel + settings.homing.pulloff) * settings.axis[idx].steps_per_mm);
+                    else
+                        sys.position[idx] = lroundf(-settings.homing.pulloff * settings.axis[idx].steps_per_mm);
+                    break;
+            }
         }
-    } while (idx);
+    } while(idx);
 }
 
+static float homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
+{
+    // currently homing, do required modifications
+    if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT)) {
+        // couple A and B motors to move in sync
+        // ... TODO
+    }
+
+    return feedrate;
+}
+
+static void scara_homing_complete(bool success)
+{
+    if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT)) {
+        // restore coupled motors
+        // ... TODO
+    }
+
+    if(success) {
+        // update work envelope
+        get_cuboid_envelope();
+    }
+
+    if(on_homing_completed) {
+        on_homing_completed(success);
+    }
+}
+
+
+// ************************ Settings ************************ //
+
+static const setting_group_detail_t kinematics_groups [] = {
+    { Group_Root, Group_Kinematics, "Scara robot settings"}
+};
+
+static const setting_detail_t kinematics_settings[] = {
+    { Setting_Kinematics0, Group_Kinematics, "Kinematics configuration", NULL, Format_Bitfield, "Absolute angles, Elbow Up, Couple motors during homing", NULL, NULL, Setting_NonCore, &scara_settings.config, NULL, NULL },
+    { Setting_Kinematics1, Group_Kinematics, "Link 1 length", "mm", Format_Decimal, "###0.00", NULL, NULL, Setting_NonCore, &scara_settings.l1, NULL, NULL },
+    { Setting_Kinematics2, Group_Kinematics, "Link 2 length", "mm", Format_Decimal, "###0.00", NULL, NULL, Setting_NonCore, &scara_settings.l2, NULL, NULL },
+    { Setting_Kinematics3, Group_Kinematics, "Homing switch 1 position", "degrees", Format_Decimal, "##0.00", NULL, NULL, Setting_NonCore, &scara_settings.home1_offset, NULL, NULL },
+    { Setting_Kinematics4, Group_Kinematics, "Homing switch 2 position", "degrees", Format_Decimal, "##0.00", NULL, NULL, Setting_NonCore, &scara_settings.home2_offset, NULL, NULL },
+};
+
+static void scara_settings_changed (settings_t *settings, settings_changed_flags_t changed)
+{
+    float position[N_AXIS] = {0}, cartesian[N_AXIS];
+
+    memcpy(&machine, &scara_settings, sizeof(scara_settings_t));
+
+    get_cuboid_envelope();
+}
+
+static void scara_settings_save(void)
+{
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&scara_settings, sizeof(scara_settings_t), true);
+}
+
+static void scara_settings_restore(void)
+{
+    // setting defaults
+    scara_settings.config = 0b111;
+    scara_settings.l1 = 500.0f;
+    scara_settings.l2 = 450.0f;
+    scara_settings.home1_offset = 45.0f;
+    scara_settings.home2_offset = -180.0f;
+
+    hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&scara_settings, sizeof(scara_settings_t), true);
+}
+
+static void scara_settings_load(void)
+{
+    if(hal.nvs.memcpy_from_nvs((uint8_t *)&scara_settings, nvs_address, sizeof(scara_settings_t), true) != NVS_TransferResult_OK)
+        scara_settings_restore();
+}
+
+static setting_details_t setting_details = {
+    .groups = kinematics_groups,
+    .n_groups = sizeof(kinematics_groups) / sizeof(setting_group_detail_t),
+    .settings = kinematics_settings,
+    .n_settings = sizeof(kinematics_settings) / sizeof(setting_detail_t),
+    .load = scara_settings_load,
+    .restore = scara_settings_restore,
+    .save = scara_settings_save,
+    .on_changed = scara_settings_changed
+};
 
 // ********************* other functions ********************** //
 
@@ -361,19 +441,15 @@ static void report_options (bool newopt)
     on_report_options(newopt);  // call original report before adding new info
     if(!newopt) {
         hal.stream.write("[KINEMATICS:Scara v0.01]" ASCII_EOL);
-
-        char msgOut[128];
-        snprintf(msgOut, sizeof(msgOut), "[ROBOT:link_lengths=%0.2f,%0.2f]\n", machine.l1, machine.l2);
-        hal.stream.write(msgOut);
     }
 }
 
 static void report_angles (stream_write_ptr stream_write, report_tracking_flags_t report)
 {
     stream_write("|Qj:");
-    stream_write(ftoa(sys.position[A_MOTOR]/settings.axis[A_MOTOR].steps_per_mm, 3));
+    stream_write(ftoa(sys.position[A_MOTOR]/settings.axis[A_MOTOR].steps_per_mm, 2));
     stream_write(",");
-    stream_write(ftoa(sys.position[B_MOTOR]/settings.axis[B_MOTOR].steps_per_mm, 3));
+    stream_write(ftoa(sys.position[B_MOTOR]/settings.axis[B_MOTOR].steps_per_mm, 2));
     
     if (on_realtime_report){
         on_realtime_report(stream_write, report);
@@ -382,34 +458,40 @@ static void report_angles (stream_write_ptr stream_write, report_tracking_flags_
 
 
 // Initialize API pointers for scara kinematics
-void scara_init(void){
-    // store machine info
-    machine.l1 = SCARA_L1;
-    machine.l2 = SCARA_L2;
+void scara_init(void)
+{
+    if((nvs_address = nvs_alloc(sizeof(scara_settings_t)))) {
+        // set initial angles in steps:
+        sys.position[A_MOTOR] = 0.0;
+        sys.position[B_MOTOR] = (int32_t)(-90 * settings.axis[B_MOTOR].steps_per_mm); //-90 degrees
 
-    // set initial angles in steps:
-    sys.position[A_MOTOR] = 0.0;
-    sys.position[B_MOTOR] = (int32_t)(-90 * settings.axis[B_MOTOR].steps_per_mm); //-90 degrees
+        // specify custom kinematics functions
+        kinematics.transform_steps_to_cartesian = scara_transform_steps_to_cartesian;
+        kinematics.transform_from_cartesian = scara_transform_from_cartesian;
+        kinematics.segment_line = scara_segment_line;
+        
+        // specify custom homing functions
+        kinematics.limits_get_axis_mask = scara_limits_get_axis_mask;
+        kinematics.limits_set_target_pos = scara_limits_set_target_pos;
+        kinematics.limits_set_machine_positions = scara_limits_set_machine_positions;
+        kinematics.homing_cycle_get_feedrate = homing_cycle_get_feedrate;
+        
+        on_homing_completed = grbl.on_homing_completed;
+        grbl.on_homing_completed = scara_homing_complete;
 
-    // specify custom kinematics functions
-    kinematics.transform_steps_to_cartesian = scara_transform_steps_to_cartesian;
-    kinematics.transform_from_cartesian = scara_transform_from_cartesian;
-    kinematics.segment_line = scara_segment_line;
-    
-    kinematics.limits_get_axis_mask = scara_limits_get_axis_mask;
-    kinematics.limits_set_target_pos = scara_limits_set_target_pos;
-    kinematics.limits_set_machine_positions = scara_limits_set_machine_positions;
+        // jog cancel interrupts line segmentation
+        grbl.on_jog_cancel = cancel_jog;
 
-    // jog cancel interrupt line segmentation
-    grbl.on_jog_cancel = cancel_jog;
+        // add additional report info
+        on_report_options = grbl.on_report_options;
+        grbl.on_report_options = report_options;
 
-    // add additional report info
-    on_report_options = grbl.on_report_options;
-    grbl.on_report_options = report_options;
+        on_realtime_report = grbl.on_realtime_report;
+        grbl.on_realtime_report = report_angles;
 
-    // add q angles to realtime report
-    on_realtime_report = grbl.on_realtime_report;
-    grbl.on_realtime_report = report_angles; 
+        // add scara settings
+        settings_register(&setting_details);
+    }
 }
 
 #endif
