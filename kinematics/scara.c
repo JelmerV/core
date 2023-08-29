@@ -188,7 +188,8 @@ static float *scara_transform_from_cartesian(float *target_q, float *position_xy
     // Check if out of reach
     if (isnan(q.q1) || isnan(q.q2)) {
         // trigger soft limit
-        //system_raise_alarm(Alarm_SoftLimit);
+        // TODO: add smarter way of handling out of reach commands
+        system_raise_alarm(Alarm_SoftLimit);
         return NULL;
     }
 
@@ -296,19 +297,44 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
 
 static uint_fast8_t scara_limits_get_axis_mask (uint_fast8_t idx)
 {   
-    return bit(idx);
+    if ((idx == A_MOTOR) || (idx == B_MOTOR)) {
+        return (bit(X_AXIS) | bit(Y_AXIS));
+    } else {
+        return bit(idx);
+    }
 }
 
-static void scara_limits_set_target_pos (uint_fast8_t idx)
+static void scara_limits_set_target_pos(uint_fast8_t idx)
 {
-    sys.position[idx] = 0;
+    q_t q;
+    q.q1 = sys.position[X_AXIS] / settings.axis[A_MOTOR].steps_per_mm;
+    q.q2 = sys.position[Y_AXIS] / settings.axis[B_MOTOR].steps_per_mm;
+    xy_t xy = q_to_xy(q.q1, q.q2);
+
+    char msgOut[100] = {0};
+    snprintf(msgOut, sizeof(msgOut), "lim_set_pos: idx:%d|xy:%.05f,%.05f|q:%.05f,%.05f\n", idx, xy.x, xy.y, q.q1, q.q2);
+    hal.stream.write(msgOut);
+
+    switch(idx) {
+        case X_AXIS:
+            sys.position[A_MOTOR] = 0; //q.q1 * settings.axis[A_MOTOR].steps_per_mm;
+            break;
+        case Y_AXIS:
+            sys.position[B_MOTOR] = 0 ; //q.q2 * settings.axis[B_MOTOR].steps_per_mm;
+            break;
+        default:
+            sys.position[idx] = 0;
+            break;
+    }
 }
 
 // Set machine positions for homed limit switches. Don't update non-homed axes.
 // NOTE: settings.max_travel[] is stored as a negative value.
 static void scara_limits_set_machine_positions (axes_signals_t cycle)
 {
-    hal.stream.write("scara_limits_set_machine_positions\n");
+    char msgOut[100] = {0};
+    snprintf(msgOut, sizeof(msgOut), "scara_limits_set_machine_positions: %d\n", cycle.mask);
+    hal.stream.write(msgOut);
 
     int32_t pulloff = settings.homing.pulloff;
     uint_fast8_t idx = N_AXIS;
@@ -343,12 +369,57 @@ static void scara_limits_set_machine_positions (axes_signals_t cycle)
     } while(idx);
 }
 
+// custom position transformation for during the homing cycle
+static float *get_homing_target (float *target_q, float *position_xy)
+{
+    // do not change higher axis
+    uint_fast8_t idx = N_AXIS-1;
+    do {
+        target_q[idx] = position_xy[idx];
+        idx--;
+    } while (idx > Y_AXIS);
+
+    // apply inverse kinematics
+    q_t q = xy_to_q(position_xy[A_MOTOR], position_xy[B_MOTOR]);
+    
+    char msgOut[100] = {0};
+    snprintf(msgOut, sizeof(msgOut), "homing_target: %d|xy:%.05f,%.05f|q:%.05f,%.05f\n", idx, position_xy[X_AXIS], position_xy[Y_AXIS], q.q1, q.q2);
+    hal.stream.write(msgOut);
+
+    if (bit_istrue(settings.homing.dir_mask.value, bit(A_MOTOR)) || bit_istrue(settings.homing.dir_mask.value, bit(B_MOTOR))) {
+        target_q[A_MOTOR] = (machine.home1_offset + HOMING_AXIS_LOCATE_SCALAR*settings.homing.pulloff) * settings.axis[A_MOTOR].steps_per_mm;
+        target_q[B_MOTOR] = (machine.home2_offset + HOMING_AXIS_LOCATE_SCALAR*settings.homing.pulloff) * settings.axis[B_MOTOR].steps_per_mm;
+    } else {
+        target_q[A_MOTOR] = (machine.home1_offset - HOMING_AXIS_LOCATE_SCALAR*settings.homing.pulloff) * settings.axis[A_MOTOR].steps_per_mm;
+        target_q[B_MOTOR] = (machine.home2_offset - HOMING_AXIS_LOCATE_SCALAR*settings.homing.pulloff) * settings.axis[B_MOTOR].steps_per_mm;
+    }
+    // do {
+    //     if((settings.homing.pulloff * HOMING_AXIS_LOCATE_SCALAR - fabsf(position_xy[X_AXIS])) > - 0.1f) {
+    //         target_q[idx] = position_xy[X_AXIS] * 360.0f; // settings.axis[X_AXIS].steps_per_mm;
+    //     } else {
+    //         target_q[idx] = bit_istrue(settings.homing.dir_mask.value, bit(idx)) ? -.5f : .5f;
+    //     }
+    //     idx--;
+    // } while(idx);
+
+    return target_q;
+}
+
 static float homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
 {
+    char msgOut[100] = {0};
+    snprintf(msgOut, sizeof(msgOut), "homing_cycle_get_feedrate: %d\n", cycle.mask);
+    hal.stream.write(msgOut);
+
     // currently homing, do required modifications
-    if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT)) {
-        // couple A and B motors to move in sync
-        // ... TODO
+    if (bit_istrue(cycle.mask, bit(A_MOTOR)) || bit_istrue(cycle.mask, bit(B_MOTOR))) {      
+        kinematics.transform_from_cartesian = get_homing_target;
+        
+        if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT)) {
+            // couple A and B motors to move in sync
+            // ... TODO
+            hal.stream.write("couple motors\n");
+        }
     }
 
     return feedrate;
@@ -356,6 +427,10 @@ static float homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
 
 static void scara_homing_complete(bool success)
 {
+    hal.stream.write("scara_homing_complete\n");
+    
+    kinematics.transform_from_cartesian = scara_transform_from_cartesian;
+
     if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT)) {
         // restore coupled motors
         // ... TODO
@@ -375,7 +450,7 @@ static void scara_homing_complete(bool success)
 // ************************ Settings ************************ //
 
 static const setting_group_detail_t kinematics_groups [] = {
-    { Group_Root, Group_Kinematics, "Scara robot settings"}
+    { Group_Root, Group_Kinematics, "Scara robot"}
 };
 
 static const setting_detail_t kinematics_settings[] = {
@@ -456,19 +531,28 @@ static void report_angles (stream_write_ptr stream_write, report_tracking_flags_
     }
 }
 
+void scara_init_system_position (void)
+{
+    // set initial position
+    sys.position[A_MOTOR] = 0.0;
+    if (bit_istrue(machine.config, ELBOW_UP_CONFIGURATION_BIT)) {
+        sys.position[B_MOTOR] = lroundf(-90.0f * settings.axis[B_MOTOR].steps_per_mm); //90 degrees down
+    } else {
+        sys.position[B_MOTOR] = lroundf(90.0f * settings.axis[B_MOTOR].steps_per_mm); //90 degrees up
+    }
+    hal.stream.write("scara_init_system_position\n");
+}
+
 
 // Initialize API pointers for scara kinematics
 void scara_init(void)
 {
     if((nvs_address = nvs_alloc(sizeof(scara_settings_t)))) {
-        // set initial angles in steps:
-        sys.position[A_MOTOR] = 0.0;
-        sys.position[B_MOTOR] = (int32_t)(-90 * settings.axis[B_MOTOR].steps_per_mm); //-90 degrees
-
         // specify custom kinematics functions
         kinematics.transform_steps_to_cartesian = scara_transform_steps_to_cartesian;
         kinematics.transform_from_cartesian = scara_transform_from_cartesian;
         kinematics.segment_line = scara_segment_line;
+        kinematics.init_system_position = scara_init_system_position;
         
         // specify custom homing functions
         kinematics.limits_get_axis_mask = scara_limits_get_axis_mask;

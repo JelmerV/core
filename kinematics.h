@@ -31,6 +31,7 @@ typedef struct {
     void (*limits_set_machine_positions)(axes_signals_t cycle);
     bool (*homing_cycle_validate)(axes_signals_t cycle);
     float (*homing_cycle_get_feedrate)(float feedrate, axes_signals_t cycle);
+    void (*init_system_position)(void);
 } kinematics_t;
 
 extern kinematics_t kinematics;

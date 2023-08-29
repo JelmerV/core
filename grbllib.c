@@ -258,7 +258,11 @@ int grbl_enter (void)
 
     if(hal.get_position)
         hal.get_position(&sys.position); // TODO: restore on abort when returns true?
-
+        
+#ifdef KINEMATICS_API
+    if(kinematics.init_system_position)
+        kinematics.init_system_position();
+#endif
 
 #if ENABLE_BACKLASH_COMPENSATION
     mc_backlash_init((axes_signals_t){AXES_BITMASK});
@@ -284,10 +288,15 @@ int grbl_enter (void)
         // Reset report entry points
         report_init_fns();
 
-        if(!sys.position_lost || settings.homing.flags.keep_on_reset)
+        if(!sys.position_lost || settings.homing.flags.keep_on_reset) {
             memset(&sys, 0, offsetof(system_t, homed)); // Clear system variables except alarm & homed status.
-        else
+        } else {
             memset(&sys, 0, offsetof(system_t, alarm)); // Clear system variables except state & alarm.
+            #ifdef KINEMATICS_API
+            if(kinematics.init_system_position)
+                kinematics.init_system_position();
+            #endif
+        }
 
         sys.var5399 = -2;                                        // Clear last M66 result
         sys.override.feed_rate = DEFAULT_FEED_OVERRIDE;          // Set to 100%
