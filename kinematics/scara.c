@@ -20,7 +20,7 @@
 #include "../grbl.h"
 
 #if SCARA
-#define DEBUG On
+// #define DEBUG On
 
 #include <math.h>
 #include <string.h>
@@ -161,9 +161,11 @@ static float *scara_transform_to_cartesian(float *coords, float *angles)
     coords[X_AXIS] = xy.x;
     coords[Y_AXIS] = xy.y;
 
+#ifdef DEBUG
     // char msgOut[100] = {0};
     // snprintf(msgOut, sizeof(msgOut), "[degree2cartesian] q:%0.05f,%0.05f|xy:%.05f,%.05f\n", angles[A_MOTOR], angles[B_MOTOR], xy.x, xy.y);
     // hal.stream.write(msgOut);
+#endif
 
     return coords;
 }
@@ -204,9 +206,11 @@ static float *scara_transform_from_cartesian(float *target_q, float *position_xy
         return NULL;
     }
 
+#ifdef DEBUG
     // char msgOut[100] = {0};
     // snprintf(msgOut, sizeof(msgOut), "[cartesian2degree] xy:%.05f,%.05f|q:%.05f,%.05f\n", position_xy[X_AXIS], position_xy[Y_AXIS], q.q1, q.q2);
     // hal.stream.write(msgOut);
+#endif
 
     target_q[A_MOTOR] = q.q1 ;
     target_q[B_MOTOR] = q.q2 ;
@@ -226,7 +230,6 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
     static coord_data_t delta, segment_target, current_position, final_target;
 
     uint_fast8_t idx = N_AXIS;
-    char msgOut[200] = {0};
 
     if (init) {
         // resume motion
@@ -247,7 +250,7 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
 
         // check if segmentation needed
         float distance = sqrtf(delta.x * delta.x + delta.y * delta.y);
-        do_segments = !(plan_data->condition.rapid_motion) && distance > MAX_SEG_LENGTH_MM;
+        do_segments = distance > MAX_SEG_LENGTH_MM;  //&& !(plan_data->condition.rapid_motion)
 
         // calculate amount of segments and delta step size
         if (do_segments) {
@@ -270,9 +273,13 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
         // ensure at least 1 iteration
         iterations++;
 
+#ifdef DEBUG
+        // char msgOut[200] = {0};
         // print debug info
+        // char msgOut[100] = {0};
         // snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d,do_segments=%d,dist=%f,delta=%f,%f,%f\n", iterations, do_segments, distance, delta.x, delta.y, delta.z);
         // hal.stream.write(msgOut);
+#endif
     } 
     else {
         // return next segment
@@ -293,10 +300,12 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
     // convert to joint angles
     scara_transform_from_cartesian(current_position.values, segment_target.values);
 
+#ifdef DEBUG
     // more debug info
     snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d|target_xy=%0.4f,%0.4f|target_q=%0.6f,%0.6f\n", 
         iterations, segment_target.x, segment_target.y, current_position.x, current_position.y);
     hal.stream.write(msgOut);
+#endif
 
     if (iterations == 0 || jog_cancel) {
         return NULL;
@@ -377,9 +386,11 @@ static float *scara_get_homing_target(float *target, float *position)
 // function called early on, misused to temporarily change kinematics
 static float scara_homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
 {
+#ifdef DEBUG
     char msgOut[100] = {0};
     snprintf(msgOut, sizeof(msgOut), "scara_homing_cycle_get_feedrate|feedrate=%f\n", feedrate);
     hal.stream.write(msgOut);
+#endif
 
     // cannot use kinematics when in unknown position, use alternative
     kinematics.transform_from_cartesian = scara_get_homing_target;
@@ -423,10 +434,13 @@ static void scara_limits_set_machine_positions (axes_signals_t cycle)
         }
     } while(idx);
 
+
+#ifdef DEBUG
     // print debug info
     char msgOut[100] = {0};
     snprintf(msgOut, sizeof(msgOut), "scara_limits_set_machine_positions|pos=%d,%d\n", sys.position[A_MOTOR], sys.position[B_MOTOR]);
     hal.stream.write(msgOut);
+#endif
 }
 
 static void scara_homing_complete(bool success)
