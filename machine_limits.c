@@ -38,18 +38,6 @@
 
 #include "config.h"
 
-// This is the Limit Pin Change Interrupt, which handles the hard limit feature. A bouncing
-// limit switch can cause a lot of problems, like false readings and multiple interrupt calls.
-// If a switch is triggered at all, something bad has happened and treat it as such, regardless
-// if a limit switch is being disengaged. It's impossible to reliably tell the state of a
-// bouncing pin because the microcontroller does not retain any state information when
-// detecting a pin change. If we poll the pins in the ISR, you can miss the correct reading if the
-// switch is bouncing.
-// NOTE: Do not attach an e-stop to the limit pins, because this interrupt is disabled during
-// homing cycles and will not respond correctly. Upon user request or need, there may be a
-// special pinout for an e-stop, but it is generally recommended to just directly connect
-// your e-stop switch to the microcontroller reset pin, since it is the most correct way to do this.
-
 // Merge (bitwise or) all limit switch inputs.
 ISR_CODE axes_signals_t ISR_FUNC(limit_signals_merge)(limit_signals_t signals)
 {
@@ -61,29 +49,36 @@ ISR_CODE axes_signals_t ISR_FUNC(limit_signals_merge)(limit_signals_t signals)
 }
 
 // Merge (bitwise or) home switch inputs (typically acquired from limits.min and limits.min2).
-ISR_CODE static axes_signals_t ISR_FUNC(homing_signals_select)(limit_signals_t signals, axes_signals_t auto_square, squaring_mode_t mode)
+ISR_CODE static axes_signals_t ISR_FUNC(homing_signals_select)(home_signals_t signals, axes_signals_t auto_square, squaring_mode_t mode)
 {
     axes_signals_t state;
 
     switch(mode) {
 
         case SquaringMode_A:
-            signals.min.mask &= ~auto_square.mask;
+            signals.a.mask &= ~auto_square.mask;
             break;
 
         case SquaringMode_B:
-            signals.min2.mask &= ~auto_square.mask;
+            signals.b.mask &= ~auto_square.mask;
             break;
 
         default:
             break;
     }
 
-    state.mask = signals.min.mask | signals.min2.mask;
+    state.mask = signals.a.mask | signals.b.mask;
 
     return state;
 }
 
+// This is the Limit Pin Change Interrupt, which handles the hard limit feature. A bouncing
+// limit switch can cause a lot of problems, like false readings and multiple interrupt calls.
+// If a switch is triggered at all, something bad has happened and treat it as such, regardless
+// if a limit switch is being disengaged. It's impossible to reliably tell the state of a
+// bouncing pin because the microcontroller does not retain any state information when
+// detecting a pin change. If we poll the pins in the ISR, you can miss the correct reading if the
+// switch is bouncing.
 ISR_CODE void ISR_FUNC(limit_interrupt_handler)(limit_signals_t state) // DEFAULT: Limit pin change interrupt process.
 {
     // Ignore limit switches if already in an alarm state or in-process of executing an alarm.
@@ -122,18 +117,18 @@ void limits_set_work_envelope (void)
 
             if(settings.homing.flags.force_set_origin) {
                 if(bit_isfalse(settings.homing.dir_mask.value, bit(idx))) {
-                    sys.work_envelope.min[idx] = settings.axis[idx].max_travel + pulloff;
-                    sys.work_envelope.max[idx] = 0.0f;
+                    sys.work_envelope.min.values[idx] = settings.axis[idx].max_travel + pulloff;
+                    sys.work_envelope.max.values[idx] = 0.0f;
                 } else {
-                    sys.work_envelope.min[idx] = 0.0f;
-                    sys.work_envelope.max[idx] = - (settings.axis[idx].max_travel + pulloff);
+                    sys.work_envelope.min.values[idx] = 0.0f;
+                    sys.work_envelope.max.values[idx] = - (settings.axis[idx].max_travel + pulloff);
                 }
             } else {
-                sys.work_envelope.min[idx] = settings.axis[idx].max_travel + pulloff;
-                sys.work_envelope.max[idx] = - pulloff;
+                sys.work_envelope.min.values[idx] = settings.axis[idx].max_travel + pulloff;
+                sys.work_envelope.max.values[idx] = - pulloff;
             }
         } else
-            sys.work_envelope.min[idx] = sys.work_envelope.max[idx] = 0.0f;
+            sys.work_envelope.min.values[idx] = sys.work_envelope.max.values[idx] = 0.0f;
     } while(idx);
 }
 
@@ -251,24 +246,16 @@ static bool limits_pull_off (axes_signals_t axis, float distance)
     return true; // Note: failure is returned above if move fails.
 }
 
-static float limits_get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
-{
-    return mode == HomingMode_Locate ? settings.homing.feed_rate : settings.homing.seek_rate;
-}
-
 // Homes the specified cycle axes, sets the machine position, and performs a pull-off motion after
 // completing. Homing is a special motion case, which involves rapid uncontrolled stops to locate
 // the trigger point of the limit switches. The rapid stops are handled by a system level axis lock
 // mask, which prevents the stepper algorithm from executing step pulses. Homing motions typically
 // circumvent the processes for executing motions in normal operation.
 // NOTE: Only the abort realtime command can interrupt this process.
-static bool limits_homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
+static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 {
     if (ABORTED) // Block if system reset has been issued.
         return false;
-
-    if(hal.homing.get_feedrate == NULL)
-        hal.homing.get_feedrate = limits_get_homing_rate;
 
     int32_t initial_trigger_position = 0, autosquare_fail_distance = 0;
     uint_fast8_t n_cycle = (2 * settings.homing.locate_cycles + 1);
@@ -277,7 +264,7 @@ static bool limits_homing_cycle (axes_signals_t cycle, axes_signals_t auto_squar
     float max_travel = 0.0f, homing_rate;
     homing_mode_t mode = HomingMode_Seek;
     axes_signals_t axislock, homing_state;
-    limit_signals_t limits_state;
+    home_signals_t signals_state;
     squaring_mode_t squaring_mode = SquaringMode_Both;
     coord_data_t target;
     plan_line_data_t plan_data;
@@ -360,7 +347,7 @@ static bool limits_homing_cycle (axes_signals_t cycle, axes_signals_t auto_squar
 
 #ifdef KINEMATICS_API
         if(kinematics.homing_cycle_get_feedrate)
-            homing_rate = kinematics.homing_cycle_get_feedrate(homing_rate, cycle);
+            homing_rate = kinematics.homing_cycle_get_feedrate(cycle, homing_rate, mode);
 #endif
 
         if(grbl.on_homing_rate_set)
@@ -389,14 +376,14 @@ static bool limits_homing_cycle (axes_signals_t cycle, axes_signals_t auto_squar
             if (mode != HomingMode_Pulloff) {
 
                 // Check homing switches state. Lock out cycle axes when they change.
-                homing_state = homing_signals_select(limits_state = hal.homing.get_state(), auto_square, squaring_mode);
+                homing_state = homing_signals_select(signals_state = hal.homing.get_state(), auto_square, squaring_mode);
 
                 // Auto squaring check
                 if((homing_state.mask & auto_square.mask) && squaring_mode == SquaringMode_Both) {
-                    if((autosquare_check = (limits_state.min.mask & auto_square.mask) != (limits_state.min2.mask & auto_square.mask))) {
+                    if((autosquare_check = (signals_state.a.mask & auto_square.mask) != (signals_state.b.mask & auto_square.mask))) {
                         initial_trigger_position = sys.position[dual_motor_axis];
                         homing_state.mask &= ~auto_square.mask;
-                        squaring_mode = (limits_state.min.mask & auto_square.mask) ? SquaringMode_A : SquaringMode_B;
+                        squaring_mode = (signals_state.a.mask & auto_square.mask) ? SquaringMode_A : SquaringMode_B;
                         hal.stepper.disable_motors(auto_square, squaring_mode);
                     }
                 }
@@ -439,6 +426,8 @@ static bool limits_homing_cycle (axes_signals_t cycle, axes_signals_t auto_squar
                 // Homing failure condition: Safety door was opened.
                 if (rt_exec & EXEC_SAFETY_DOOR)
                     system_set_exec_alarm(Alarm_HomingFailDoor);
+
+                hal.delay_ms(2, NULL);
 
                 // Homing failure condition: Homing switch(es) still engaged after pull-off motion
                 if (mode == HomingMode_Pulloff && (homing_signals_select(hal.homing.get_state(), (axes_signals_t){0}, SquaringMode_Both).mask & cycle.mask))
@@ -522,6 +511,8 @@ status_code_t limits_go_home (axes_signals_t cycle)
 {
     axes_signals_t auto_square = {0}, auto_squared = {0};
 
+    hal.limits.enable(settings.limits.flags.hard_enabled, cycle); // Disable hard limits pin change register for cycle duration
+
     if(hal.stepper.get_ganged)
         auto_squared = hal.stepper.get_ganged(true);
 
@@ -545,7 +536,7 @@ status_code_t limits_go_home (axes_signals_t cycle)
 
     tc_clear_tlo_reference(cycle);
 
-    return limits_homing_cycle(cycle, auto_square) ? Status_OK : Status_Unhandled;
+    return grbl.home_machine(cycle, auto_square) ? Status_OK : Status_Unhandled;
 }
 
 // Performs a soft limit check. Called from mc_line() only. Assumes the machine has been homed,
@@ -553,17 +544,21 @@ status_code_t limits_go_home (axes_signals_t cycle)
 // NOTE: Also used by jogging to block travel outside soft-limit volume.
 void limits_soft_check  (float *target)
 {
-    if (!system_check_travel_limits(target)) {
+#ifdef KINEMATICS_API
+    if(!grbl.check_travel_limits(target, false)) {
+#else
+    if(!grbl.check_travel_limits(target, true)) {
+#endif
         sys.flags.soft_limit = On;
         // Force feed hold if cycle is active. All buffered blocks are guaranteed to be within
         // workspace volume so just come to a controlled stop so position is not lost. When complete
         // enter alarm mode.
-        if (state_get() == STATE_CYCLE) {
+        if(state_get() == STATE_CYCLE) {
             system_set_exec_state_flag(EXEC_FEED_HOLD);
             do {
                 if(!protocol_execute_realtime())
                     return; // aborted!
-            } while (state_get() != STATE_IDLE);
+            } while(state_get() != STATE_IDLE);
         }
         mc_reset(); // Issue system reset and ensure spindle and coolant are shutdown.
         system_set_exec_alarm(Alarm_SoftLimit); // Indicate soft limit critical event
@@ -593,3 +588,100 @@ bool limits_homing_required (void)
               sys.homing.mask && (sys.homing.mask & sys.homed.mask) != sys.homing.mask;
 }
 
+static float get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
+{
+    return mode == HomingMode_Locate ? settings.homing.feed_rate : settings.homing.seek_rate;
+}
+
+// Checks and reports if target array exceeds machine travel limits. Returns false if check failed.
+static bool check_travel_limits (float *target, bool is_cartesian)
+{
+    bool failed = false;
+    uint_fast8_t idx = N_AXIS;
+
+    if(is_cartesian && sys.homed.mask) do {
+        idx--;
+        if(bit_istrue(sys.homed.mask, bit(idx)) && settings.axis[idx].max_travel < -0.0f)
+            failed = target[idx] < sys.work_envelope.min.values[idx] || target[idx] > sys.work_envelope.max.values[idx];
+    } while(!failed && idx);
+
+    return is_cartesian && !failed;
+}
+
+// Derived from code by Dimitrios Matthes & Vasileios Drakopoulos
+// https://www.mdpi.com/1999-4893/16/4/201
+static void clip_3d_target (coord_data_t *position, coord_data_t *target, work_envelope_t *envelope)
+{
+    float a = target->x - position->x;
+    float b = target->y - position->y;
+    float c = target->z - position->z;
+
+    if(target->x < envelope->min.x) {
+        target->y = b / a * (envelope->min.x - position->x) + position->y;
+        target->z = c / a * (envelope->min.x - position->x) + position->z;
+        target->x = envelope->min.x;
+    } else if(target->x > envelope->max.x) {
+        target->y = b / a * (envelope->max.x - position->x) + position->y;
+        target->z = c / a * (envelope->max.x - position->x) + position->z;
+        target->x = envelope->max.x;
+    }
+
+    if(target->y < envelope->min.y) {
+        target->x = a / b * (envelope->min.y - position->y) + position->x;
+        target->z = c / b * (envelope->min.y - position->y) + position->z;
+        target->y = envelope->min.y;
+    } else if(target->y > envelope->max.y) {
+        target->x = a / b * (envelope->max.y - position->y) + position->x;
+        target->z = c / b * (envelope->max.y - position->y) + position->z;
+        target->y = envelope->max.y;
+    }
+
+    if(target->z < envelope->min.z) {
+        target->x = a / c * (envelope->min.z - position->z) + position->x;
+        target->y = b / c * (envelope->min.z - position->z) + position->y;
+        target->z = envelope->min.z;
+    } else if(target->z > envelope->max.z) {
+        target->x = a / c * (envelope->max.z - position->z) + position->x;
+        target->y = b / c * (envelope->max.z - position->z) + position->y;
+        target->z = envelope->max.z;
+    }
+}
+
+// Limits jog commands to be within machine limits, homed axes only.
+static void apply_jog_limits (float *target, float *position)
+{
+    if(sys.homed.mask == 0)
+        return;
+
+    uint_fast8_t idx;
+
+    if((sys.homed.mask & 0b111) == 0b111) {
+
+        uint_fast8_t n_axes = 0;
+
+        idx = Z_AXIS + 1;
+        do {
+            idx--;
+            if(fabs(target[idx] - position[idx]) > 0.001f)
+                n_axes++;
+        } while(idx && n_axes < 2);
+
+        if(n_axes > 1)
+            clip_3d_target((coord_data_t *)position, (coord_data_t *)target, &sys.work_envelope);
+    }
+
+    idx = N_AXIS;
+    do {
+        idx--;
+        if(bit_istrue(sys.homed.mask, bit(idx)) && settings.axis[idx].max_travel < -0.0f)
+            target[idx] = max(min(target[idx], sys.work_envelope.max.values[idx]), sys.work_envelope.min.values[idx]);
+    } while(idx);
+}
+
+void limits_init (void)
+{
+    hal.homing.get_feedrate = get_homing_rate;
+    grbl.check_travel_limits = check_travel_limits;
+    grbl.apply_jog_limits = apply_jog_limits;
+    grbl.home_machine = homing_cycle;
+}

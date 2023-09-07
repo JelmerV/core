@@ -1,5 +1,61 @@
 ## grblHAL changelog
 
+<a name="20230906"/>20230906
+
+Plugins:
+
+* Laser: LaserBurn clusters plugin updated for [new format variation encountered](https://github.com/grblHAL/ESP32/issues/77#issuecomment-1707125447).
+
+--
+
+<a name="20230905"/>Build 20230905
+
+Core:
+
+* The method for constraining continuous multi-axis jogs \(XYZ\) \(when enabled by `$40=1`\) will now use clipping of the motion vector to the work envelope instead of limiting the target to min/max separately for each axis.
+The signature of the new core handler introduced in build 20230903 for constraining jog motions has been changed to accomodate this.
+
+* Delta robot kinematics tuning, added new setting for max allowed arm angle. Constraining jog movements to the full work envelope may now work \(I do not have a machine to test with\).
+Still work in progress.
+
+Drivers:
+
+ESP32: fix for Modbus RTU serial port board definitions.
+
+STM32F4xx: removed unused code.
+ 
+---
+
+<a name="20230825"/>Build 20230903
+
+Core:
+
+* Changed handling of homing inputs from limit switches. Some drivers will now only disable hard limits (if enabled) for axes that are homing, this includes max/min limit switches.
+If max limit switches are available for the board/configuration these will be picked for homing in the positive direction and min switches in the negative direction.
+The "unused" limit switches may have hard limits still enabled - depending on the driver.  
+__NOTE:__ I plan to add full support for all drivers to keep hard limits enabled for limit switches that are not used for the running homing cycle, this may take some time though as the changes has to be verified.  
+__NOTE:__ !! This is a __potentiallly dangerous change___, be careful when homing the machine for the first time after installing/upgrading.
+
+* HAL entry points and core handlers/events has been added and some have changed signatures in order to better support kinematics implementations.
+
+* More work on delta kinematics: new and changed settings, some improved functionality. Still in progress.
+
+Drivers:
+
+* Most: updated for HAL/core event signature changes.
+
+* STM32F4xx: "hardened" Trinamic soft UART code to improve reliability. Added fans plugin.
+
+Plugins:
+
+* Motors: fixed bug that would cause a hard fault if the X driver is not configured as Trinamic when others are. Updated for core event signature change.
+
+* Plasma: relaxed I/O requirements, will now start if up/down signals or arc voltage input is available. Still work in progress.
+
+* SD card: added option for named pallet shuttle macro to be called on M60.
+
+---
+
 <a name="20230825"/>Build 20230825
 
 Core:

@@ -60,6 +60,7 @@ typedef struct {
 #define ABSOLUTE_JOINT_ANGLES_BIT   bit(1)
 #define ELBOW_UP_CONFIGURATION_BIT  bit(2)
 #define COUPLE_ON_HOMING_BIT        bit(3)
+
 // struct to hold the machine parameters
 typedef struct {
     uint8_t config;
@@ -74,6 +75,8 @@ static scara_settings_t machine = {0}, scara_settings;
 static bool jog_cancel = false;
 static on_report_options_ptr on_report_options;
 static on_realtime_report_ptr on_realtime_report;
+static on_set_axis_setting_unit_ptr on_set_axis_setting_unit;
+static on_setting_get_description_ptr on_setting_get_description;
 static on_homing_completed_ptr on_homing_completed;
 static homing_get_feedrate_ptr get_feedrate;
 static homing_mode_t homing_mode;
@@ -138,10 +141,10 @@ static void scara_get_rectangular_workspace(void)
     float max_y = r_max / SQRT2;
     
     // using the lower hemisphere. TODO: Make config option?
-    sys.work_envelope.min[X_AXIS] = -max_x;
-    sys.work_envelope.min[Y_AXIS] = -max_y;
-    sys.work_envelope.max[X_AXIS] = -r_min;
-    sys.work_envelope.max[Y_AXIS] = max_y;
+    sys.work_envelope.min.x = -max_x;
+    sys.work_envelope.min.y = -max_y;
+    sys.work_envelope.max.x = -r_min;
+    sys.work_envelope.max.y = max_y;
 }
 
 // *********************** required grblHAL Kinematics functions ************************ //
@@ -316,37 +319,19 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
 }
 
 // *********************** Homing ************************ //
-static float scara_get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
-{   
-    // Only used to record current homing mode. (seek or locate)
-    homing_mode = mode;
-
-#ifdef DEBUG
-    char msgOut[100] = {0};
-    snprintf(msgOut, sizeof(msgOut), "scara_get_homing_rate|mode=%d\n", mode);
-    hal.stream.write(msgOut);
-#endif
-
-    return get_feedrate(cycle, mode);
-}
-
 static uint_fast8_t scara_limits_get_axis_mask (uint_fast8_t idx)
-{   
-    if(get_feedrate == NULL) {
-        get_feedrate = hal.homing.get_feedrate;
-        hal.homing.get_feedrate = scara_get_homing_rate;
-    }
-
-    // Hitting a limit halts the stepper motors. 
-    // This mask configures which steppers to halt for the specified limit.
-    return bit(idx);
+{ 
+    // Mask to configure which steppers to halt for the specified limit.
+    if (bit_istrue(machine.config, COUPLE_ON_HOMING_BIT) && (idx == A_MOTOR || idx == B_MOTOR))
+        return bit(A_MOTOR) | bit(B_MOTOR);
+    else
+        return bit(idx);
 }
 
 // Resets system position before homing starts.
 static void scara_limits_set_target_pos(uint_fast8_t idx)
 {
     sys.position[idx] = 0;
-    hal.stream.write("scara_limits_set_target_pos\n");
 }
 
 static float *scara_get_homing_target(float *target, float *position)
@@ -383,15 +368,14 @@ static float *scara_get_homing_target(float *target, float *position)
     return target;
 }
 
-
-// function called early on, misused to temporarily change kinematics
-static float scara_homing_cycle_get_feedrate (float feedrate, axes_signals_t cycle)
+static float scara_homing_cycle_get_feedrate (axes_signals_t cycle, float feedrate, homing_mode_t mode)
 {
 #ifdef DEBUG
     char msgOut[100] = {0};
     snprintf(msgOut, sizeof(msgOut), "scara_homing_cycle_get_feedrate|feedrate=%f\n", feedrate);
     hal.stream.write(msgOut);
 #endif
+    homing_mode = mode;
 
     // cannot use kinematics when in unknown position, use alternative
     kinematics.transform_from_cartesian = scara_get_homing_target;
@@ -481,6 +465,46 @@ static const setting_detail_t kinematics_settings[] = {
     { Setting_Kinematics4, Group_Kinematics, "Homing switch 2 position", "degrees", Format_Decimal, "##0.00", NULL, NULL, Setting_NonCore, &scara_settings.home2_offset, NULL, NULL },
 };
 
+#ifndef NO_SETTINGS_DESCRIPTIONS
+static const setting_descr_t kinematics_settings_descr[] = {
+    { Setting_Kinematics0, "Use absolute angles if you have both motor fixed to the base. If second motor in attached to the first link, use relative." ASCII_EOL "Elbow up indicates the second link is pointing down using negative relative angles." ASCII_EOL "Coupling motor during homing may be required when using motors at the base. This moves them in sync and avoid self-intersection." },
+    { Setting_Kinematics1, "Length of the first link in mm. (the forearm)" },
+    { Setting_Kinematics2, "Length of the second link in mm. (the forearm)" },
+    { Setting_Kinematics3, "Position of link 1 when it touched the corresponding homing switch. Make sure the homing directions are set correctly." },
+    { Setting_Kinematics4, "Position of link 2 when it touched the corresponding homing switch. Make sure the homing directions are set correctly." },
+};
+#endif
+
+static const char *scara_set_axis_setting_unit (setting_id_t setting_id, uint_fast8_t axis_idx)
+{
+    const char *unit = NULL;
+
+    if(axis_idx <= Y_AXIS) switch(setting_id) {
+
+        case Setting_AxisStepsPerMM:
+            unit = "step/deg";
+            break;
+
+        case Setting_AxisMaxRate:
+            unit = "rad/deg";
+            break;
+
+        case Setting_AxisAcceleration:
+            unit = "deg/sec^2";
+            break;
+
+        case Setting_AxisMaxTravel:
+        case Setting_AxisBacklash:
+            unit = "degrees";
+            break;
+
+        default:
+            break;
+    }
+
+    return unit == NULL && on_set_axis_setting_unit != NULL ? on_set_axis_setting_unit(setting_id, axis_idx) : unit;
+}
+
 static void scara_settings_changed (settings_t *settings, settings_changed_flags_t changed)
 {
     float position[N_AXIS] = {0}, cartesian[N_AXIS];
@@ -511,6 +535,11 @@ static void scara_settings_load(void)
 {
     if(hal.nvs.memcpy_from_nvs((uint8_t *)&scara_settings, nvs_address, sizeof(scara_settings_t), true) != NVS_TransferResult_OK)
         scara_settings_restore();
+        
+    if(on_set_axis_setting_unit == NULL) {
+        on_set_axis_setting_unit = grbl.on_set_axis_setting_unit;
+        grbl.on_set_axis_setting_unit = scara_set_axis_setting_unit;
+    }
 }
 
 static setting_details_t setting_details = {
@@ -518,6 +547,10 @@ static setting_details_t setting_details = {
     .n_groups = sizeof(kinematics_groups) / sizeof(setting_group_detail_t),
     .settings = kinematics_settings,
     .n_settings = sizeof(kinematics_settings) / sizeof(setting_detail_t),
+#ifndef NO_SETTINGS_DESCRIPTIONS
+    .descriptions = kinematics_settings_descr,
+    .n_descriptions = sizeof(kinematics_settings_descr) / sizeof(setting_descr_t),
+#endif
     .load = scara_settings_load,
     .restore = scara_settings_restore,
     .save = scara_settings_save,
