@@ -34,6 +34,7 @@
 #include "../kinematics.h"
 #include "../report.h"
 #include "../system.h"
+#include "../protocol.h"
 
 // some config stuff
 #define MAX_SEG_LENGTH_MM 2.0f // segmenting long lines due to non-linear motions [mm]
@@ -550,7 +551,7 @@ static void report_angles (stream_write_ptr stream_write, report_tracking_flags_
     }
 }
 
-void scara_init_system_position (void)
+void scara_init_system_position(sys_state_t state)
 {
     // set initial position
     sys.position[A_MOTOR] = 0.0;
@@ -571,7 +572,6 @@ void scara_init(void)
         kinematics.transform_steps_to_cartesian = scara_transform_steps_to_cartesian;
         kinematics.transform_from_cartesian = scara_transform_from_cartesian;
         kinematics.segment_line = scara_segment_line;
-        kinematics.init_system_position = scara_init_system_position;
         
         // specify custom homing functions
         kinematics.limits_get_axis_mask = scara_limits_get_axis_mask;
@@ -594,6 +594,9 @@ void scara_init(void)
 
         // add scara settings
         settings_register(&setting_details);
+        
+        // Set custom inital position
+        protocol_enqueue_rt_command(scara_init_system_position);
     }
 }
 
