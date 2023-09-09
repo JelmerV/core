@@ -235,6 +235,10 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
 
     uint_fast8_t idx = N_AXIS;
 
+#ifdef DEBUG
+    char msgOut[150] = {0};
+#endif
+
     if (init) {
         // resume motion
         jog_cancel = false;
@@ -278,11 +282,10 @@ static float *scara_segment_line (float *target, float *position, plan_line_data
         iterations++;
 
 #ifdef DEBUG
-        // char msgOut[200] = {0};
         // print debug info
-        // char msgOut[100] = {0};
-        // snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d,do_segments=%d,dist=%f,delta=%f,%f,%f\n", iterations, do_segments, distance, delta.x, delta.y, delta.z);
-        // hal.stream.write(msgOut);
+        char msgOut[100] = {0};
+        snprintf(msgOut, sizeof(msgOut), "seg_line|itrs=%d,do_segments=%d,dist=%f,delta=%f,%f,%f\n", iterations, do_segments, distance, delta.x, delta.y, delta.z);
+        hal.stream.write(msgOut);
 #endif
     } 
     else {
@@ -331,6 +334,10 @@ static uint_fast8_t scara_limits_get_axis_mask (uint_fast8_t idx)
 // Resets system position before homing starts.
 static void scara_limits_set_target_pos(uint_fast8_t idx)
 {
+#ifdef DEBUG
+    hal.stream.write("scara_limits_set_target_pos\n");
+#endif
+
     sys.position[idx] = 0;
 }
 
@@ -343,10 +350,9 @@ static float *scara_get_homing_target(float *target, float *position)
         idx--;
     } while (idx > Y_AXIS);
 
-    do {
-        if(homing_mode == HomingMode_Pulloff || homing_mode == HomingMode_Locate) {
-            target[idx] = position[idx] / settings.axis[idx].steps_per_mm;
-        } else {
+    switch(homing_mode)
+    {
+        case HomingMode_Seek: // first part: quickly towards endstop
             if (bit_istrue(settings.homing.dir_mask.value, bit(idx))) {
                 target[A_MOTOR] = -360.0f;
                 target[B_MOTOR] = -360.0f;
@@ -354,14 +360,23 @@ static float *scara_get_homing_target(float *target, float *position)
                 target[A_MOTOR] = 360.0f;
                 target[B_MOTOR] = 360.0f;
             }
-        }
-        idx--;
-    } while (idx);
+            break;
+        case HomingMode_Pulloff: //targets set current position, now pull-off
+            target[A_MOTOR] = position[A_MOTOR];
+            target[B_MOTOR] = position[B_MOTOR];
+            break;
+        case HomingMode_Locate: // slowly towards endstop
+            target[A_MOTOR] = position[A_MOTOR];
+            target[B_MOTOR] = position[B_MOTOR];
+            break;
+        default:
+            break;
+    }
 
 #ifdef DEBUG
     // debug info
     char msgOut[100] = {0};
-    snprintf(msgOut, sizeof(msgOut), "scara_get_homing_target|pos=%d,%d|target=%f,%f\n", sys.position[A_MOTOR], sys.position[B_MOTOR], target[A_MOTOR], target[B_MOTOR]);
+    snprintf(msgOut, sizeof(msgOut), "scara_get_homing_target; pos=%f,%f,%f; target=%f,%f,%f \n", position[X_AXIS], position[Y_AXIS], position[Z_AXIS], target[X_AXIS], target[Y_AXIS], target[Z_AXIS]);
     hal.stream.write(msgOut);
 #endif
 
@@ -380,6 +395,10 @@ static float scara_homing_cycle_get_feedrate (axes_signals_t cycle, float feedra
     // cannot use kinematics when in unknown position, use alternative
     kinematics.transform_from_cartesian = scara_get_homing_target;
 
+    if (mode == HomingMode_Pulloff) {
+        feedrate *= 360.0f;
+    }
+
     return feedrate;
 }
 
@@ -388,15 +407,7 @@ static float scara_homing_cycle_get_feedrate (axes_signals_t cycle, float feedra
 static void scara_limits_set_machine_positions (axes_signals_t cycle)
 {
     uint_fast8_t idx = N_AXIS;
-    if(settings.homing.flags.force_set_origin || true) {  // forced to set pos to 0
-        do {
-            if(cycle.mask & bit(--idx)) {
-                sys.position[idx] = 0;
-                sys.home_position[idx] = 0.0f;
-            }
-        } while(idx);
-    } 
-    else do {  // calculate position based on homing direction
+    do {  // calculate position based on homing direction
         if(cycle.mask & bit(--idx)) {
             float pulloff = settings.homing.pulloff;
             if (bit_istrue(settings.homing.dir_mask.value, bit(idx)))
@@ -404,16 +415,16 @@ static void scara_limits_set_machine_positions (axes_signals_t cycle)
 
             switch(idx) {
                 case A_MOTOR:
-                    sys.position[A_MOTOR] = lroundf((machine.home1_offset + pulloff) * settings.axis[A_MOTOR].steps_per_mm);
+                    sys.position[A_MOTOR] = lroundf((machine.home1_offset - pulloff) * settings.axis[A_MOTOR].steps_per_mm);
                     break;
                 case B_MOTOR:
-                    sys.position[B_MOTOR] = lroundf((machine.home2_offset + pulloff) * settings.axis[B_MOTOR].steps_per_mm);
+                    sys.position[B_MOTOR] = lroundf((machine.home2_offset - pulloff) * settings.axis[B_MOTOR].steps_per_mm);
                     break;
                 default:
                     if bit_istrue(settings.homing.dir_mask.value, bit(idx))
-                        sys.position[idx] = lroundf((settings.axis[idx].max_travel + settings.homing.pulloff) * settings.axis[idx].steps_per_mm);
+                        sys.position[idx] = lroundf((settings.axis[idx].max_travel + pulloff) * settings.axis[idx].steps_per_mm);
                     else
-                        sys.position[idx] = lroundf(-settings.homing.pulloff * settings.axis[idx].steps_per_mm);
+                        sys.position[idx] = lroundf(pulloff * settings.axis[idx].steps_per_mm);
                     break;
             }
         }
@@ -422,9 +433,10 @@ static void scara_limits_set_machine_positions (axes_signals_t cycle)
 
 #ifdef DEBUG
     // print debug info
-    char msgOut[100] = {0};
-    snprintf(msgOut, sizeof(msgOut), "scara_limits_set_machine_positions|pos=%d,%d\n", sys.position[A_MOTOR], sys.position[B_MOTOR]);
+    char msgOut[150] = {0};
+    snprintf(msgOut, sizeof(msgOut), "scara_limits_set_machine_positions|pos=%d,%d,%d\n", sys.position[A_MOTOR], sys.position[B_MOTOR], sys.position[Z_AXIS]);
     hal.stream.write(msgOut);
+    hal.stream.write(ASCII_EOL);
 #endif
 }
 
@@ -467,8 +479,10 @@ static const setting_detail_t kinematics_settings[] = {
 
 #ifndef NO_SETTINGS_DESCRIPTIONS
 static const setting_descr_t kinematics_settings_descr[] = {
-    { Setting_Kinematics0, "Use absolute angles if you have both motor fixed to the base. If second motor in attached to the first link, use relative." ASCII_EOL "Elbow up indicates the second link is pointing down using negative relative angles." ASCII_EOL "Coupling motor during homing may be required when using motors at the base. This moves them in sync and avoid self-intersection." },
-    { Setting_Kinematics1, "Length of the first link in mm. (the forearm)" },
+    { Setting_Kinematics0, "Use absolute angles if you have both motor fixed to the base. If second motor in attached to the first link, use relative.\\n"
+                            "Elbow up indicates the second link is pointing down. Relative angles between link 1 and 2 will be negative in that case.\\n"
+                            "Coupling motor during homing may be required when using motors at the base and absolute angles. This moves them in sync and avoid self-intersection." },
+    { Setting_Kinematics1, "Length of the first link in mm. (the upper arm)" },
     { Setting_Kinematics2, "Length of the second link in mm. (the forearm)" },
     { Setting_Kinematics3, "Position of link 1 when it touched the corresponding homing switch. Make sure the homing directions are set correctly." },
     { Setting_Kinematics4, "Position of link 2 when it touched the corresponding homing switch. Make sure the homing directions are set correctly." },
