@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2023 Terje Io
+  Copyright (c) 2017-2024 Terje Io
   Copyright (c) 2011-2015 Sungeun K. Jeon
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -101,7 +101,7 @@ static bool dummy_irq_claim (irq_type_t irq, uint_fast8_t id, irq_callback_ptr c
     return false;
 }
 
-static void report_driver_error (sys_state_t state)
+static void report_driver_error (void *data)
 {
     char msg[40];
 
@@ -274,7 +274,7 @@ int grbl_enter (void)
 
     if(driver.ok != 0xFF) {
         sys.alarm = Alarm_SelftestFailed;
-        protocol_enqueue_rt_command(report_driver_error);
+        protocol_enqueue_foreground_task(report_driver_error, NULL);
     }
 
     hal.stepper.enable(settings.steppers.deenergize);
@@ -298,6 +298,13 @@ int grbl_enter (void)
     if(settings.report_interval) {
         on_execute_realtime = grbl.on_execute_realtime;
         grbl.on_execute_realtime = auto_realtime_report;
+    }
+
+    if(hal.driver_cap.sd_card || hal.driver_cap.littlefs) {
+        fs_options_t fs_options = {0};
+        fs_options.lfs_hidden = hal.driver_cap.littlefs;
+        fs_options.sd_mount_on_boot = hal.driver_cap.sd_card;
+        setting_remove_elements(Setting_FSOptions, fs_options.mask);
     }
 
     // Grbl initialization loop upon power-up or a system abort. For the latter, all processes
@@ -336,6 +343,7 @@ int grbl_enter (void)
         plan_reset();                   // Clear block buffer and planner variables
         st_reset();                     // Clear stepper subsystem variables.
         limits_set_homing_axes();       // Set axes to be homed from settings.
+        system_init_switches();         // Set switches from inputs.
 
         // Sync cleared gcode and planner positions to current system position.
         sync_position();

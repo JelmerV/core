@@ -79,11 +79,19 @@
 #define PROBE_ENABLE        1
 #endif
 
+#ifndef NEOPIXELS_ENABLE
+#define NEOPIXELS_ENABLE    0
+#endif
+
 #ifndef USB_SERIAL_CDC
 #define USB_SERIAL_CDC      0 // for UART comms
 #endif
 #ifndef USB_SERIAL_WAIT
 #define USB_SERIAL_WAIT     0
+#endif
+
+#if USB_SERIAL_CDC == 0 && !defined(SERIAL_STREAM)
+#define SERIAL_STREAM       0
 #endif
 
 #ifndef KEYPAD_ENABLE
@@ -100,6 +108,8 @@
 
 #if MPG_ENABLE == 1 && KEYPAD_ENABLE == 2
 #define MPG_MODE            2
+#elif MPG_ENABLE == 2
+#define MPG_MODE            3
 #elif MPG_ENABLE
 #define MPG_MODE            1
 #else
@@ -155,15 +165,26 @@
 #endif
 
 #ifndef SPINDLE_SYNC_ENABLE
-#define SPINDLE_SYNC_ENABLE 0
+#define SPINDLE_SYNC_ENABLE     0
+#endif
+
+#ifndef SPINDLE_ENCODER_ENABLE
+#if SPINDLE_SYNC_ENABLE
+#define SPINDLE_ENCODER_ENABLE  1
+#else
+#define SPINDLE_ENCODER_ENABLE  0
+#endif
 #endif
 
 #ifndef TRINAMIC_ENABLE
   #define TRINAMIC_ENABLE   0
 #endif
 #if TRINAMIC_ENABLE == 2209
-  #if !defined(TRINAMIC_UART_ENABLE)
+  #ifndef TRINAMIC_UART_ENABLE
     #define TRINAMIC_UART_ENABLE 1
+  #endif
+  #if !defined(TRINAMIC_STREAM) && TRINAMIC_UART_ENABLE == 1
+    #define TRINAMIC_STREAM 1
   #endif
 #else
   #define TRINAMIC_UART_ENABLE 0
@@ -196,6 +217,11 @@
 #endif
 #ifndef PLASMA_ENABLE
 #define PLASMA_ENABLE       0
+#elif PLASMA_ENABLE
+#if defined(STEP_INJECT_ENABLE)
+#undef STEP_INJECT_ENABLE
+#endif
+#define STEP_INJECT_ENABLE  1
 #endif
 #ifndef PPI_ENABLE
 #define PPI_ENABLE          0
@@ -210,12 +236,100 @@
 #endif
 #endif
 
+// TODO: remove?
 #ifndef VFD_SPINDLE
 #if VFD_ENABLE
 #define VFD_SPINDLE         1
 #else
 #define VFD_SPINDLE         0
 #endif
+#endif
+
+#ifndef SPINDLE0_ENABLE
+  #if VFD_ENABLE
+    #define SPINDLE0_ENABLE VFD_ENABLE
+    #if N_SPINDLE > 1 && !defined(SPINDLE1_ENABLE)
+      #define SPINDLE1_ENABLE SPINDLE_PWM0
+    #endif
+  #else
+    #define SPINDLE0_ENABLE SPINDLE_PWM0
+  #endif
+#endif
+
+#ifndef SPINDLE1_ENABLE
+#define SPINDLE1_ENABLE     0
+#endif
+
+#ifndef SPINDLE2_ENABLE
+#define SPINDLE2_ENABLE     0
+#endif
+
+#ifndef SPINDLE3_ENABLE
+#define SPINDLE3_ENABLE     0
+#endif
+
+#if SPINDLE0_ENABLE == SPINDLE_ALL
+#define SPINDLE_ENABLE SPINDLE_ALL
+#else
+#define SPINDLE_ENABLE ((1<<SPINDLE0_ENABLE)|(1<<SPINDLE1_ENABLE)|(1<<SPINDLE2_ENABLE)|(1<<SPINDLE3_ENABLE))
+#endif
+
+// Driver spindle 0
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM0)|(1<<SPINDLE_PWM0_NODIR)|(1<<SPINDLE_ONOFF0)|(1<<SPINDLE_ONOFF0_DIR))
+#define DRIVER_SPINDLE_ENABLE       1
+#else
+#define DRIVER_SPINDLE_ENABLE       0
+#endif
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM0)|(1<<SPINDLE_ONOFF0_DIR))
+#define DRIVER_SPINDLE_DIR_ENABLE   1
+#else
+#define DRIVER_SPINDLE_DIR_ENABLE   0
+#endif
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM0)|(1<<SPINDLE_PWM0_NODIR))
+#define DRIVER_SPINDLE_PWM_ENABLE  1
+#define DRIVER_SPINDLE_NAME "PWM"
+#else
+#define DRIVER_SPINDLE_PWM_ENABLE  0
+#if DRIVER_SPINDLE_ENABLE
+#define DRIVER_SPINDLE_NAME "Basic"
+#endif
+#endif
+
+// Driver spindle 1
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM1)|(1<<SPINDLE_PWM1_NODIR)|(1<<SPINDLE_ONOFF1)|(1<<SPINDLE_ONOFF1_DIR))
+#define DRIVER_SPINDLE1_ENABLE       1
+#else
+#define DRIVER_SPINDLE1_ENABLE       0
+#endif
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM1)|(1<<SPINDLE_ONOFF1_DIR))
+#define DRIVER_SPINDLE1_DIR_ENABLE   1
+#else
+#define DRIVER_SPINDLE1_DIR_ENABLE   0
+#endif
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_PWM1)|(1<<SPINDLE_PWM1_NODIR))
+#define DRIVER_SPINDLE1_PWM_ENABLE  1
+#define DRIVER_SPINDLE1_NAME "PWM"
+#else
+#define DRIVER_SPINDLE1_PWM_ENABLE  0
+#if DRIVER_SPINDLE1_ENABLE
+#define DRIVER_SPINDLE1_NAME "Basic"
+#endif
+#endif
+
+//
+
+#ifndef VFD_ENABLE
+  #if SPINDLE_ENABLE & ((1<<SPINDLE_HUANYANG1)|(1<<SPINDLE_HUANYANG2)|(1<<SPINDLE_GS20)|(1<<SPINDLE_YL620A)|(1<<SPINDLE_MODVFD)|(1<<SPINDLE_H100)|(1<<SPINDLE_NOWFOREVER))
+    #define VFD_ENABLE 1
+  #else
+    #define VFD_ENABLE 0
+  #endif
 #endif
 
 #define MODBUS_RTU_ENABLED     0b001
@@ -235,10 +349,12 @@
 #endif
 #endif
 
-#if !VFD_SPINDLE || N_SPINDLE > 1
-#define DRIVER_SPINDLE_ENABLE  1
-#else
-#define DRIVER_SPINDLE_ENABLE  0
+#ifndef STEP_INJECT_ENABLE
+  #if SPINDLE_ENABLE & (1<<SPINDLE_STEPPER)
+    #define STEP_INJECT_ENABLE 1
+  #else
+    #define STEP_INJECT_ENABLE 0
+  #endif
 #endif
 
 #ifndef QEI_ENABLE
@@ -269,8 +385,31 @@
 #endif
 #endif
 
+// Optional control signals
+
 #ifndef SAFETY_DOOR_ENABLE
 #define SAFETY_DOOR_ENABLE  0
+#endif
+#ifndef PROBE_DISCONNECT_ENABLE
+#define PROBE_DISCONNECT_ENABLE 0
+#endif
+#ifndef STOP_DISABLE_ENABLE
+#define STOP_DISABLE_ENABLE 0
+#endif
+#ifndef BLOCK_DELETE_ENABLE
+#define BLOCK_DELETE_ENABLE 0
+#endif
+#ifndef SINGLE_BLOCK_ENABLE
+#define SINGLE_BLOCK_ENABLE 0
+#endif
+#ifndef MOTOR_FAULT_ENABLE
+#define MOTOR_FAULT_ENABLE 0
+#endif
+#ifndef MOTOR_WARNING_ENABLE
+#define MOTOR_WARNING_ENABLE 0
+#endif
+#ifndef LIMITS_OVERRIDE_ENABLE
+#define LIMITS_OVERRIDE_ENABLE 0
 #endif
 
 #if SAFETY_DOOR_ENABLE && defined(NO_SAFETY_DOOR_SUPPORT)
@@ -286,6 +425,8 @@
 #elif ESTOP_ENABLE && COMPATIBILITY_LEVEL > 1
   #warning "Enabling ESTOP may not work with all senders!"
 #endif
+
+//
 
 #ifndef WIFI_ENABLE
 #define WIFI_ENABLE         0
@@ -303,7 +444,7 @@
 #define WEBUI_INFLASH       0
 #endif
 
-#if WEBUI_ENABLE && !defined(ESP_PLATFORM) 
+#if WEBUI_ENABLE
 
 #if !WIFI_ENABLE
 #ifdef ETHERNET_ENABLE

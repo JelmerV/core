@@ -149,7 +149,7 @@ typedef union {
         float x;
         float y;
     };
-} point_2d;
+} point_2d_t;
 
 #pragma pack(push, 1)
 

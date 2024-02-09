@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2023 Terje Io
+  Copyright (c) 2021-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -65,6 +65,7 @@ typedef int32_t (*wait_on_input_ptr)(io_port_type_t type, uint8_t port, wait_mod
 typedef void (*set_pin_description_ptr)(io_port_type_t type, io_port_direction_t dir, uint8_t port, const char *s);
 
 /*! \brief Pointer to function for getting information about a digital or analog port.
+<br>__NOTE:__ The port information pointed to will be overwritten by the next call to this function.
 \param type as an \a #io_port_type_t enum value.
 \param dir as an \a #io_port_direction_t enum value.
 \param port port number.
@@ -104,7 +105,7 @@ typedef void (*ioport_interrupt_callback_ptr)(uint8_t port, bool state);
 */
 typedef bool (*ioport_register_interrupt_handler_ptr)(uint8_t port, pin_irq_mode_t irq_mode, ioport_interrupt_callback_ptr interrupt_callback);
 
-typedef bool (*ioports_enumerate_callback_ptr)(xbar_t *properties, uint8_t port);
+typedef bool (*ioports_enumerate_callback_ptr)(xbar_t *properties, uint8_t port, void *data);
 
 //! Properties and handlers for auxiliary digital and analog I/O.
 typedef struct {
@@ -125,7 +126,7 @@ typedef struct {
 uint8_t ioports_available (io_port_type_t type, io_port_direction_t dir);
 bool ioport_claim (io_port_type_t type, io_port_direction_t dir, uint8_t *port, const char *description);
 bool ioport_can_claim_explicit (void);
-bool ioports_enumerate (io_port_type_t type, io_port_direction_t dir, pin_mode_t filter, bool claimable, ioports_enumerate_callback_ptr callback);
+bool ioports_enumerate (io_port_type_t type, io_port_direction_t dir, pin_cap_t filter, ioports_enumerate_callback_ptr callback, void *data);
 
 //
 
@@ -146,6 +147,7 @@ typedef struct io_ports_data {
 
 //!* \brief Precalculated values that may be set/used by HAL driver to speed up analog input to PWM conversions. */
 typedef struct {
+    uint32_t f_clock;
     uint_fast16_t period;
     uint_fast16_t off_value;    //!< NOTE: this value holds the inverted version if software PWM inversion is enabled by the driver.
     uint_fast16_t min_value;
@@ -158,6 +160,7 @@ typedef struct {
 
 bool ioports_add (io_ports_data_t *ports, io_port_type_t type, uint8_t n_in, uint8_t n_out);
 void ioports_add_settings (driver_settings_load_ptr settings_loaded, setting_changed_ptr setting_changed);
+void ioport_setting_changed (setting_id_t id);
 #define iports_get_pnum(type, port) type.get_pnum(&type, port)
 #define ioports_map(type, port) ( type.map ? type.map[port] : port )
 uint8_t ioports_map_reverse (io_ports_detail_t *type, uint8_t port);

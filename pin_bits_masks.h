@@ -5,7 +5,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2023 Terje Io
+  Copyright (c) 2021-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -89,14 +89,6 @@
 #endif
 #endif
 
-#if SAFETY_DOOR_ENABLE && !defined(SAFETY_DOOR_BIT)
-#ifdef SAFETY_DOOR_PIN
-#define SAFETY_DOOR_BIT (1<<SAFETY_DOOR_PIN)
-#else
-#define SAFETY_DOOR_BIT 0
-#endif
-#endif
-
 #ifndef ESTOP_BIT
 #ifdef ESTOP_PIN
 #define ESTOP_BIT (1<<ESTOP_PIN)
@@ -105,8 +97,43 @@
 #endif
 #endif
 
+// Optional control signals
+
+#ifndef SAFETY_DOOR_BIT
+#if defined(SAFETY_DOOR_PIN) && !SAFETY_DOOR_ENABLE
+#define SAFETY_DOOR_BIT (1<<SAFETY_DOOR_PIN)
+#else
+#define SAFETY_DOOR_BIT 0
+#if !defined(SAFETY_DOOR_PIN) && SAFETY_DOOR_ENABLE
+#warning "SAFETY_DOOR_PIN is not defined!"
+#endif
+#endif
+#endif
+
+#ifndef MOTOR_FAULT_BIT
+#if defined(MOTOR_FAULT_PIN) && !MOTOR_FAULT_ENABLE
+#define MOTOR_FAULT_BIT (1<<MOTOR_FAULT_PIN)
+#else
+#define MOTOR_FAULT_BIT 0
+#if !defined(MOTOR_FAULT_PIN) && MOTOR_FAULT_ENABLE
+#warning "MOTOR_FAULT_PIN is not defined!"
+#endif
+#endif
+#endif
+
+#ifndef MOTOR_WARNING_BIT
+#if defined(MOTOR_WARNING_PIN) && !MOTOR_WARNING_ENABLE
+#define MOTOR_WARNING_BIT (1<<MOTOR_WARNING_PIN)
+#else
+#define MOTOR_WARNING_BIT 0
+#if !defined(MOTOR_WARNING_PIN) && MOTOR_WARNING_ENABLE
+#warning "MOTOR_WARNING_PIN is not defined!"
+#endif
+#endif
+#endif
+
 #ifndef PROBE_DISCONNECT_BIT
-#ifdef PROBE_DISCONNECT_PIN
+#if defined(PROBE_DISCONNECT_PIN) && !PROBE_DISCONNECT_ENABLE
 #define PROBE_DISCONNECT_BIT (1<<PROBE_DISCONNECT_PIN)
 #else
 #define PROBE_DISCONNECT_BIT 0
@@ -114,7 +141,7 @@
 #endif
 
 #ifndef STOP_DISABLE_BIT
-#ifdef STOP_DISABLE_PIN
+#if defined(STOP_DISABLE_PIN) && !STOP_DISABLE_ENABLE
 #define STOP_DISABLE_BIT (1<<STOP_DISABLE_PIN)
 #else
 #define STOP_DISABLE_BIT 0
@@ -122,7 +149,7 @@
 #endif
 
 #ifndef BLOCK_DELETE_BIT
-#ifdef BLOCK_DELETE_PIN
+#if defined(BLOCK_DELETE_PIN) && !BLOCK_DELETE_ENABLE
 #define BLOCK_DELETE_BIT (1<<BLOCK_DELETE_PIN)
 #else
 #define BLOCK_DELETE_BIT 0
@@ -130,36 +157,55 @@
 #endif
 
 #ifndef SINGLE_BLOCK_BIT
-#ifdef SINGLE_BLOCK_PIN
+#if defined(SINGLE_BLOCK_PIN) && !SINGLE_BLOCK_ENABLE
 #define SINGLE_BLOCK_BIT (1<<SINGLE_BLOCK_PIN)
 #else
 #define SINGLE_BLOCK_BIT 0
 #endif
 #endif
 
-#ifndef MOTOR_FAULT_BIT
-#ifdef MOTOR_FAULT_PIN
-#define MOTOR_FAULT_BIT (1<<MOTOR_FAULT_PIN)
-#else
-#define MOTOR_FAULT_BIT 0
-#endif
-#endif
-
-#ifndef MOTOR_WARNING_BIT
-#ifdef MOTOR_WARNING_PIN
-#define MOTOR_WARNING_BIT (1<<MOTOR_WARNING_PIN)
-#else
-#define MOTOR_WARNING_BIT 0
-#endif
-#endif
-
 #ifndef LIMITS_OVERRIDE_BIT
-#ifdef LIMITS_OVERRIDE_PIN
+#if defined(LIMITS_OVERRIDE_PIN) && !LIMITS_OVERRIDE_ENABLE
 #define LIMITS_OVERRIDE_BIT (1<<LIMITS_OVERRIDE_PIN)
 #else
 #define LIMITS_OVERRIDE_BIT 0
 #endif
 #endif
+
+#if SAFETY_DOOR_ENABLE || MOTOR_FAULT_ENABLE || MOTOR_WARNING_ENABLE || PROBE_DISCONNECT_ENABLE || \
+    STOP_DISABLE_ENABLE || BLOCK_DELETE_ENABLE || SINGLE_BLOCK_ENABLE || LIMITS_OVERRIDE_ENABLE || defined __DOXYGEN__
+
+#define AUX_CONTROLS_ENABLED 1
+
+#if PROBE_DISCONNECT_ENABLE || STOP_DISABLE_ENABLE || BLOCK_DELETE_ENABLE || SINGLE_BLOCK_ENABLE || LIMITS_OVERRIDE_ENABLE
+#define AUX_CONTROLS_SCAN    3 // start index for scanned inputs
+#else
+#define AUX_CONTROLS_SCAN    0
+#endif
+
+#if SAFETY_DOOR_ENABLE || MOTOR_FAULT_ENABLE || MOTOR_WARNING_ENABLE
+#define AUX_CONTROLS_XMAP    1
+#else
+#define AUX_CONTROLS_XMAP    0
+#endif
+
+static aux_ctrl_t aux_ctrl[] = {
+    { .enabled = SAFETY_DOOR_ENABLE, .port = 0xFF, .irq_mode = (pin_irq_mode_t)(IRQ_Mode_Rising|IRQ_Mode_Falling), .cap = { .safety_door_ajar = On }, .function = Input_SafetyDoor },
+    { .enabled = MOTOR_FAULT_ENABLE, .port = 0xFF, .irq_mode = (pin_irq_mode_t)(IRQ_Mode_Rising|IRQ_Mode_Falling), .cap = { .motor_fault = On }, .function = Input_MotorFault },
+    { .enabled = MOTOR_WARNING_ENABLE, .port = 0xFF, .irq_mode = (pin_irq_mode_t)(IRQ_Mode_Rising|IRQ_Mode_Falling), .cap = { .motor_warning = On }, .function = Input_MotorWarning },
+    { .enabled = PROBE_DISCONNECT_ENABLE, .port = 0xFF, .irq_mode = (pin_irq_mode_t)(IRQ_Mode_Rising|IRQ_Mode_Falling), .cap = { .motor_fault = On }, .function = Input_ProbeDisconnect },
+    { .enabled = STOP_DISABLE_ENABLE, .port = 0xFF, .irq_mode = IRQ_Mode_Change, .cap = { .stop_disable = On }, .function = Input_StopDisable },
+    { .enabled = BLOCK_DELETE_ENABLE, .port = 0xFF, .irq_mode = IRQ_Mode_Change, .cap = { .block_delete = On }, .function = Input_BlockDelete },
+    { .enabled = SINGLE_BLOCK_ENABLE, .port = 0xFF, .irq_mode = IRQ_Mode_Change, .cap = { .single_block = On }, .function = Input_SingleBlock },
+    { .enabled = LIMITS_OVERRIDE_ENABLE, .port = 0xFF, .irq_mode = IRQ_Mode_None, .cap = { .limits_override = On }, .function = Input_LimitsOverride }
+};
+
+#else
+#define AUX_CONTROLS_ENABLED 0
+#define AUX_CONTROLS_SCAN    0
+#endif
+
+//
 
 #ifndef CONTROL_MASK
 #if SAFETY_DOOR_ENABLE
@@ -199,14 +245,6 @@
 
 // IRQ enabled input singnals
 
-#if SAFETY_DOOR_ENABLE
-#ifndef SAFETY_DOOR_BIT
-#define SAFETY_DOOR_BIT (1<<SAFETY_DOOR_PIN)
-#endif
-#else
-#define SAFETY_DOOR_BIT 0
-#endif
-
 #ifndef MPG_MODE_PIN
 #define MPG_MODE_BIT 0
 #elif !defined(MPG_MODE_BIT)
@@ -226,15 +264,21 @@
 #endif
 
 #if SPINDLE_SYNC_ENABLE
-#ifndef SPINDLE_INDEX_BIT
-#define SPINDLE_INDEX_BIT (1<<SPINDLE_INDEX_PIN)
-#endif
-#ifndef SPINDLE_PULSE_BIT
-#define SPINDLE_PULSE_BIT (1<<SPINDLE_PULSE_PIN)
-#endif
+  #if defined(SPINDLE_INDEX_PIN) && defined(SPINDLE_PULSE_PIN)
+    #ifndef SPINDLE_INDEX_BIT
+      #define SPINDLE_INDEX_BIT (1<<SPINDLE_INDEX_PIN)
+    #endif
+    #ifndef SPINDLE_PULSE_BIT
+      #define SPINDLE_PULSE_BIT (1<<SPINDLE_PULSE_PIN)
+    #endif
+  #else
+    #define SPINDLE_INDEX_BIT 0
+    #define SPINDLE_PULSE_BIT 0
+    #error "Spindle sync requires SPINDLE_PULSE_PIN and SPINDLE_INDEX_PIN defined in the board map!"
+  #endif
 #else
-#define SPINDLE_INDEX_BIT 0
-#define SPINDLE_PULSE_BIT 0
+  #define SPINDLE_INDEX_BIT 0
+  #define SPINDLE_PULSE_BIT 0
 #endif
 
 #if QEI_ENABLE

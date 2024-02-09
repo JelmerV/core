@@ -236,7 +236,9 @@ typedef enum {
     LaserPPI_Enable = 126,              //!< 126 - M126
     LaserPPI_Rate = 127,                //!< 127 - M127
     LaserPPI_PulseLength = 128,         //!< 128 - M128
+    RGB_WriteLEDs = 150,                //!< 150 - M150, Marlin format
     OpenPNP_SetAcceleration = 204,      //!< 204 - M204
+    PWMServo_SetPosition= 280,          //!< 280 - M280, Marlin format
     RGB_Inspection_Light = 356,         //!< 356 - M356
     OpenPNP_FinishMoves = 400,          //!< 400 - M400
     Probe_Deploy = 401,                 //!< 401 - M401, Marlin format
@@ -357,10 +359,13 @@ typedef struct {
 } coord_system_t;
 
 //! Axis index to plane assignment.
-typedef struct {
-    uint8_t axis_0;
-    uint8_t axis_1;
-    uint8_t axis_linear;
+typedef union {
+    uint8_t axis[3];
+    struct {
+        uint8_t axis_0;
+        uint8_t axis_1;
+        uint8_t axis_linear;
+    };
 } plane_t;
 
 /*! \brief G- and M-code parameter values
@@ -377,11 +382,32 @@ typedef struct {
     float ijk[3];              //!< I,J,K Axis arc offsets
     float k;                   //!< G33 distance per revolution
     float m;                   //!< G65 argument.
-    float p;                   //!< G10 or dwell parameters
-    float q;                   //!< User defined M-code parameter, M67 output value, G83 delta increment
+    float p;                   //!< G10, 664 or dwell parameters
+    float q;                   //!< User defined M-code parameter, M67 output value, G64 naive CAM tolerance, G83 delta increment
     float r;                   //!< Arc radius or retract position
     float s;                   //!< Spindle speed - single-meaning word
+#ifndef A_AXIS
+    float a;
+#endif
+#ifndef B_AXIS
+    float b;
+#endif
+#ifndef C_AXIS
+    float c;
+#endif
+#if !defined(U_AXIS) && !AXIS_REMAP_ABC2UVW
+    float u;
+#endif
+#if !defined(V_AXIS) && !AXIS_REMAP_ABC2UVW
+    float v;
+#endif
+#if !AXIS_REMAP_ABC2UVW
+    float w;
+#endif
     float xyz[N_AXIS];         //!< X,Y,Z (and A,B,C,U,V when enabled) translational axes
+#if LATHE_UVW_OPTION
+    float uvw[3];              //!< U,V,W lathe mode incremental mode motion
+#endif
     coord_system_t coord_data; //!< Coordinate data
     int32_t $;                 //!< Spindle id - single-meaning word
     int32_t n;                 //!< Line number - single-meaning word
@@ -456,7 +482,9 @@ typedef struct {
     //< uint8_t cutter_comp;             //!< {G40} NOTE: Don't track. Only default supported.
     tool_offset_mode_t tool_offset_mode; //!< {G43,G43.1,G49}
     coord_system_t coord_system;         //!< {G54,G55,G56,G57,G58,G59,G59.1,G59.2,G59.3}
-    // control_mode_t control;           //!< {G61} NOTE: Don't track. Only default supported.
+#if ENABLE_PATH_BLENDING
+    control_mode_t control;              //!< {G61} NOTE: Don't track. Only default supported.
+#endif
     program_flow_t program_flow;         //!< {M0,M1,M2,M30,M60}
     coolant_state_t coolant;             //!< {M7,M8,M9}
     spindle_mode_t spindle;              //!< {M3,M4,M5 and G96,G97}
@@ -472,7 +500,6 @@ typedef struct {
     float xyz[3];
     float delta;
     float dwell;
-    float prev_position;
     float retract_position; //!< Canned cycle retract position
     bool rapid_retract;
     bool spindle_off;
@@ -527,10 +554,13 @@ typedef struct {
     float feed_rate;                    //!< Millimeters/min
     float distance_per_rev;             //!< Millimeters/rev
     float position[N_AXIS];             //!< Where the interpreter considers the tool to be at this point in the code
-    //  float blending_tolerance;       //!< Motion blending tolerance
+#if ENABLE_PATH_BLENDING
+    float path_tolerance;               //!< Path blending tolerance
+    float cam_tolerance;                //!< Naive CAM tolerance
+#endif
     int32_t line_number;                //!< Last line number sent
     tool_id_t tool_pending;             //!< Tool to be selected on next M6
-#if N_TOOLS && NGC_EXPRESSIONS_ENABLE
+#if NGC_EXPRESSIONS_ENABLE
     uint32_t g43_pending;               //!< Tool offset to be selected on next M6, for macro ATC
 #endif
     bool file_run;                      //!< Tracks % command
@@ -554,11 +584,6 @@ typedef struct {
 } scale_factor_t;
 
 extern parser_state_t gc_state;
-#if N_TOOLS
-extern tool_data_t tool_table[N_TOOLS + 1];
-#else
-extern tool_data_t tool_table;
-#endif
 
 /*! \brief Parser block structure.
 

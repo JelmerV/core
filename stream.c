@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2023 Terje Io
+  Copyright (c) 2021-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -72,8 +72,10 @@ static stream_write_char_ptr mpg_write_char = NULL;
 
 void stream_register_streams (io_stream_details_t *details)
 {
-    details->next = streams;
-    streams = details;
+    if(details->n_streams) {
+        details->next = streams;
+        streams = details;
+    }
 }
 
 bool stream_enumerate_streams (stream_enumerate_callback_ptr callback)
@@ -362,14 +364,24 @@ io_stream_flags_t stream_get_flags (io_stream_t stream)
     return flags;
 }
 
+bool stream_set_description (const io_stream_t *stream, const char *description)
+{
+    bool ok;
+
+    if((ok = stream->type == StreamType_Serial && !stream->state.is_usb && hal.periph_port.set_pin_description)) {
+        hal.periph_port.set_pin_description(Output_TX, (pin_group_t)(PinGroup_UART + stream->instance), description);
+        hal.periph_port.set_pin_description(Input_RX, (pin_group_t)(PinGroup_UART + stream->instance), description);
+    }
+
+    return ok;
+}
+
 bool stream_connect (const io_stream_t *stream)
 {
     bool ok;
 
-    if((ok = stream_select(stream, true)) && stream->type == StreamType_Serial && !stream->state.is_usb && hal.periph_port.set_pin_description) {
-        hal.periph_port.set_pin_description(Input_RX, (pin_group_t)(PinGroup_UART + stream->instance), "Primary UART");
-        hal.periph_port.set_pin_description(Output_TX, (pin_group_t)(PinGroup_UART + stream->instance), "Primary UART");
-    }
+    if((ok = stream_select(stream, true)))
+        stream_set_description(stream, "Primary UART");
 
     return ok;
 }
@@ -403,19 +415,37 @@ void stream_disconnect (const io_stream_t *stream)
         stream_select(stream, false);
 }
 
-io_stream_t const *stream_open_instance (uint8_t instance, uint32_t baud_rate, stream_write_char_ptr rx_handler)
+io_stream_t const *stream_open_instance (uint8_t instance, uint32_t baud_rate, stream_write_char_ptr rx_handler, const char *description)
 {
     connection.instance = instance;
     connection.baud_rate = baud_rate;
     connection.stream = NULL;
 
-    if(stream_enumerate_streams(_open_instance))
+    if(stream_enumerate_streams(_open_instance)) {
         connection.stream->set_enqueue_rt_handler(rx_handler);
+        if(description)
+            stream_set_description(connection.stream, description);
+    }
 
     return connection.stream;
 }
 
 // MPG stream
+
+void stream_mpg_set_mode (void *data)
+{
+    stream_mpg_enable(data != NULL);
+}
+
+ISR_CODE bool ISR_FUNC(stream_mpg_check_enable)(char c)
+{
+    if(c == CMD_MPG_MODE_TOGGLE)
+        protocol_enqueue_foreground_task(stream_mpg_set_mode, (void *)1);
+    else
+        protocol_enqueue_realtime_command(c);
+
+    return true;
+}
 
 bool stream_mpg_register (const io_stream_t *stream, bool rx_only, stream_write_char_ptr write_char)
 {
@@ -430,6 +460,9 @@ bool stream_mpg_register (const io_stream_t *stream, bool rx_only, stream_write_
 
         mpg.stream = stream;
         mpg.is_up = is_connected;
+
+        if(hal.periph_port.set_pin_description)
+            hal.periph_port.set_pin_description(Input_RX, (pin_group_t)(PinGroup_UART + stream->instance), "MPG");
 
         return true;
     }
@@ -449,10 +482,7 @@ bool stream_mpg_register (const io_stream_t *stream, bool rx_only, stream_write_
 
         hal.stream.write_all = stream_write_all;
 
-        if(hal.periph_port.set_pin_description) {
-            hal.periph_port.set_pin_description(Output_TX, (pin_group_t)(PinGroup_UART + stream->instance), "MPG");
-            hal.periph_port.set_pin_description(Input_RX, (pin_group_t)(PinGroup_UART + stream->instance), "MPG");
-        }
+        stream_set_description(stream, "MPG");
     }
 
     return connection != NULL;
@@ -593,16 +623,12 @@ const io_stream_t *stream_null_init (uint32_t baud_rate)
 
 static stream_write_ptr dbg_write = NULL;
 
-static void debug_stream_warning (uint_fast16_t state)
-{
-    report_message("Failed to initialize debug stream!", Message_Warning);
-}
-
 void debug_write (const char *s)
 {
     if(dbg_write) {
         dbg_write(s);
-        while(hal.debug.get_tx_buffer_count()); // Wait until message is delivered
+        while(hal.debug.get_tx_buffer_count()) // Wait until message is delivered
+            grbl.on_execute_realtime(state_get());
     }
 }
 
@@ -611,7 +637,8 @@ void debug_writeln (const char *s)
     if(dbg_write) {
         dbg_write(s);
         dbg_write(ASCII_EOL);
-        while(hal.debug.get_tx_buffer_count()); // Wait until message is delivered
+        while(hal.debug.get_tx_buffer_count()) // Wait until message is delivered
+            grbl.on_execute_realtime(state_get());
     }
 }
 
@@ -628,7 +655,7 @@ static bool debug_claim_stream (io_stream_properties_t const *stream)
             hal.debug.write = debug_write;
 
             if(hal.periph_port.set_pin_description)
-                hal.periph_port.set_pin_description(Output_TX, hal.debug.instance == 0 ? PinGroup_UART : PinGroup_UART2, "Debug out");
+                hal.periph_port.set_pin_description(Output_TX, (pin_group_t)(PinGroup_UART + hal.debug.instance), "Debug out");
         }
     }
 
@@ -640,7 +667,7 @@ bool debug_stream_init (void)
     if(stream_enumerate_streams(debug_claim_stream))
         hal.debug.write(ASCII_EOL "UART debug active:" ASCII_EOL);
     else
-        protocol_enqueue_rt_command(debug_stream_warning);
+        protocol_enqueue_foreground_task(report_warning, "Failed to initialize debug stream!");
 
     return hal.debug.write == debug_write;
 }

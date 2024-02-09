@@ -28,7 +28,12 @@
     trinamic_init();
 #endif
 
-#if MODBUS_ENABLE && MODBUS_ENABLE & 0x01
+#if PLASMA_ENABLE
+    extern void plasma_init (void);
+    plasma_init();
+#endif
+
+#if MODBUS_ENABLE && (MODBUS_ENABLE & 0x01)
     extern void modbus_rtu_init (void);
     modbus_rtu_init();
 #endif
@@ -36,6 +41,26 @@
 #if CANBUS_ENABLE
     extern void canbus_init (void);
     canbus_init();
+#endif
+
+#if SPINDLE_ENABLE & (1<<SPINDLE_PWM0_CLONE)
+    extern void cloned_spindle_init (void);
+    cloned_spindle_init();
+#endif
+
+#if SPINDLE_ENABLE & (1<<SPINDLE_STEPPER)
+    extern void stepper_spindle_init (void);
+    stepper_spindle_init();
+#endif
+
+#if SPINDLE_ENABLE & ((1<<SPINDLE_ONOFF1)|(1<<SPINDLE_ONOFF1_DIR))
+    extern void onoff_spindle_init (void);
+    onoff_spindle_init();
+#endif
+
+#if SPINDLE_ENABLE & (1<<SPINDLE_PWM2)
+    extern void pwm_spindle_init (void);
+    pwm_spindle_init();
 #endif
 
 #if VFD_ENABLE
@@ -78,6 +103,11 @@
     lb_clusters_init();
 #endif
 
+#if PROBE_PROTECT_ENABLE
+    extern void probe_protect_init (void);
+    probe_protect_init();
+#endif
+
 #if WEBUI_ENABLE
     extern void webui_init (void);
     webui_init();
@@ -100,6 +130,16 @@
 // The code for these has to be downloaded from the source and placed in the same folder as driver.c
 // Note: Third party plugins may have more than one implementation, there is no "owner" of plugins listed here.
 //       It is also guaranteed that there will be no implementation in the grblHAL repository of these.
+
+#if PWM_SERVO_ENABLE
+    extern void pwm_servo_init (void);
+    pwm_servo_init();
+#endif
+
+#if BLTOUCH_ENABLE
+    extern void bltouch_init (void);
+    bltouch_init();
+#endif
 
 #if ATC_ENABLE
     extern void atc_init (void);

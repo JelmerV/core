@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2023 Terje Io
+  Copyright (c) 2021-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -143,7 +143,7 @@ bool ioport_can_claim_explicit (void)
     return !(hal.port.claim == NULL || hal.port.get_pin_info == NULL);
 }
 
-bool ioports_enumerate (io_port_type_t type, io_port_direction_t dir, pin_mode_t filter, bool claimable, ioports_enumerate_callback_ptr callback)
+bool ioports_enumerate (io_port_type_t type, io_port_direction_t dir, pin_cap_t filter, ioports_enumerate_callback_ptr callback, void *data)
 {
     bool ok = false;
     uint8_t n_ports = ioports_available(type, dir);
@@ -151,9 +151,7 @@ bool ioports_enumerate (io_port_type_t type, io_port_direction_t dir, pin_mode_t
 
     if(n_ports && ioport_can_claim_explicit()) do {
         portinfo = hal.port.get_pin_info(type, dir, --n_ports);
-        if(claimable && portinfo->mode.claimed)
-            continue;
-        if((portinfo->mode.mask & filter.mask) == filter.mask && (ok = callback(portinfo, n_ports)))
+        if((portinfo->cap.mask & filter.mask) == filter.mask && (ok = callback(portinfo, n_ports, data)))
             break;
     } while(n_ports);
 
@@ -257,7 +255,7 @@ bool ioports_add (io_ports_data_t *ports, io_port_type_t type, uint8_t n_in, uin
     return n_ports > 0;
 }
 
-uint8_t ioports_map_reverse (io_ports_detail_t *type, uint8_t port)
+ISR_CODE uint8_t ISR_FUNC(ioports_map_reverse)(io_ports_detail_t *type, uint8_t port)
 {
     if(type->map) {
         uint_fast8_t idx = type->n_ports;
@@ -290,17 +288,20 @@ static inline uint_fast16_t invert_pwm (ioports_pwm_t *pwm_data, uint_fast16_t p
 */
 bool ioports_precompute_pwm_values (pwm_config_t *config, ioports_pwm_t *pwm_data, uint32_t clock_hz)
 {
+    pwm_data->f_clock = clock_hz;
+
     if(config->max > config->min) {
         pwm_data->min = config->min;
         pwm_data->period = (uint_fast16_t)((float)clock_hz / config->freq_hz);
-        if(config->off_value == 0.0f)
-            pwm_data->off_value = pwm_data->invert_pwm ? pwm_data->period : 0;
-        else
-            pwm_data->off_value = invert_pwm(pwm_data, (uint_fast16_t)(pwm_data->period * config->off_value / 100.0f));
         pwm_data->min_value = (uint_fast16_t)(pwm_data->period * config->min_value / 100.0f);
         pwm_data->max_value = (uint_fast16_t)(pwm_data->period * config->max_value / 100.0f); // + pwm_data->offset;
         pwm_data->pwm_gradient = (float)(pwm_data->max_value - pwm_data->min_value) / (config->max - config->min);
-        pwm_data->always_on = config->off_value != 0.0f;
+        if(!(pwm_data->always_on = config->off_value != 0.0f))
+            pwm_data->off_value = pwm_data->invert_pwm ? pwm_data->period : 0;
+        else if(!config->servo_mode && config->off_value > 0.0f)
+            pwm_data->off_value = invert_pwm(pwm_data, (uint_fast16_t)(pwm_data->period * config->off_value / 100.0f));
+        else
+            pwm_data->off_value = pwm_data->min_value;
     }
 
     return config->max > config->min;
@@ -358,25 +359,55 @@ static bool is_setting_available (const setting_detail_t *setting)
     return available;
 }
 
-static status_code_t aux_set_invert_out (setting_id_t id, uint_fast16_t value)
+static status_code_t aux_set_value (setting_id_t id, uint_fast16_t value)
 {
     ioport_bus_t invert;
-    invert.mask = (uint8_t)value & digital.outx.mask;
 
-    if(settings.ioport.invert_out.mask != invert.mask) {
+    switch(id) {
 
-        settings.ioport.invert_out.mask = invert.mask;
+        case Settings_IoPort_InvertIn:
+            settings.ioport.invert_in.mask = value;
+            if(on_setting_changed)
+                on_setting_changed(id);
+            break;
 
-        if(on_setting_changed)
-            on_setting_changed(id);
+        case Settings_IoPort_InvertOut:
+            invert.mask = (uint8_t)value & digital.outx.mask;
+            if(settings.ioport.invert_out.mask != invert.mask) {
+
+                settings.ioport.invert_out.mask = invert.mask;
+
+                if(on_setting_changed)
+                    on_setting_changed(id);
+            }
+            break;
+
+        default:
+            break;
     }
 
     return Status_OK;
 }
 
-static uint32_t aux_get_invert_out (setting_id_t setting)
+static uint32_t aux_get_value (setting_id_t id)
 {
-    return settings.ioport.invert_out.mask;
+    uint32_t value = 0;
+
+    switch(id) {
+
+        case Settings_IoPort_InvertIn:
+            value = settings.ioport.invert_in.mask;
+            break;
+
+        case Settings_IoPort_InvertOut:
+            value = settings.ioport.invert_out.mask;
+            break;
+
+        default:
+            break;
+    }
+
+    return value;
 }
 
 static const setting_group_detail_t ioport_groups[] = {
@@ -384,9 +415,9 @@ static const setting_group_detail_t ioport_groups[] = {
 };
 
 static const setting_detail_t ioport_settings[] = {
-    { Settings_IoPort_InvertIn, Group_AuxPorts, "Invert I/O Port inputs", NULL, Format_Bitfield, digital.in.port_names, NULL, NULL, Setting_NonCore, &settings.ioport.invert_in.mask, NULL, is_setting_available },
+    { Settings_IoPort_InvertIn, Group_AuxPorts, "Invert I/O Port inputs", NULL, Format_Bitfield, digital.in.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_value, aux_get_value, is_setting_available },
 //    { Settings_IoPort_Pullup_Disable, Group_AuxPorts, "I/O Port inputs pullup disable", NULL, Format_Bitfield, "Port 0,Port 1,Port 2,Port 3,Port 4,Port 5,Port 6,Port 7", NULL, NULL },
-    { Settings_IoPort_InvertOut, Group_AuxPorts, "Invert I/O Port outputs", NULL, Format_Bitfield, digital.out.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_invert_out, aux_get_invert_out, is_setting_available },
+    { Settings_IoPort_InvertOut, Group_AuxPorts, "Invert I/O Port outputs", NULL, Format_Bitfield, digital.out.port_names, NULL, NULL, Setting_NonCoreFn, aux_set_value, aux_get_value, is_setting_available },
 //    { Settings_IoPort_OD_Enable, Group_AuxPorts, "I/O Port outputs as open drain", NULL, Format_Bitfield, "Port 0,Port 1,Port 2,Port 3,Port 4,Port 5,Port 6,Port 7", NULL, NULL }
 };
 
@@ -419,6 +450,12 @@ static setting_details_t setting_details = {
     .load = ioport_settings_load,
     .save = settings_write_global
 };
+
+void ioport_setting_changed (setting_id_t id)
+{
+    if(on_setting_changed)
+        on_setting_changed(id);
+}
 
 void ioports_add_settings (driver_settings_load_ptr settings_loaded, setting_changed_ptr setting_changed)
 {

@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2023 Terje Io
+  Copyright (c) 2023-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -126,4 +126,26 @@ limit_signals_t xbar_get_homing_source_from_cycle (axes_signals_t homing_cycle)
     }
 
     return source;
+}
+
+const char *xbar_fn_to_pinname (pin_function_t fn)
+{
+    const char *name = NULL;
+    uint_fast8_t idx = sizeof(pin_names) / sizeof(pin_name_t);
+
+    do {
+        if(pin_names[--idx].function == fn)
+            name = pin_names[idx].name;
+    } while(idx && !name);
+
+    return name ? name : "N/A";
+}
+
+control_signals_t xbar_fn_to_signals_mask (pin_function_t fn)
+{
+    control_signals_t signals;
+
+    signals.mask = fn > Input_Probe ? 0 : 1 << (uint32_t)fn;
+
+    return signals;
 }

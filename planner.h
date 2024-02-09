@@ -35,8 +35,9 @@ typedef union {
                  inverse_time         :1,
                  is_rpm_rate_adjusted :1,
                  is_laser_ppi_mode    :1,
+                 target_valid         :1,
                  target_validated     :1,
-                 unassigned           :7;
+                 unassigned           :6;
         coolant_state_t coolant;
     };
 } planner_cond_t;
@@ -86,7 +87,10 @@ typedef struct {
 #ifdef KINEMATICS_API
     float rate_multiplier;          // Feed rate multiplier.
 #endif
-    //  float blending_tolerance;   // Motion blending tolerance
+#if ENABLE_PATH_BLENDING
+    float path_tolerance;           //!< Path blending tolerance.
+    float cam_tolerance;            //!< Naive CAM tolerance.
+#endif
     spindle_t spindle;              // Desired spindle parameters, such as RPM, through line motion.
     planner_cond_t condition;       // Bitfield variable to indicate planner conditions. See defines above.
     gc_override_flags_t overrides;  // Block bitfield variable for overrides

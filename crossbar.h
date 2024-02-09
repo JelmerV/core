@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2023 Terje Io
+  Copyright (c) 2021-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -25,17 +25,23 @@
 #include "nuts_bolts.h"
 
 typedef enum {
-    Input_Probe = 0,
-    Input_Reset,
+// NOTE: the sequence of the following enums MUST match the control_signals_t layout
+    Input_Reset = 0,
     Input_FeedHold,
     Input_CycleStart,
     Input_SafetyDoor,
-    Input_LimitsOverride,
-    Input_EStop,
     Input_BlockDelete,
-    Input_SingleBlock,
     Input_StopDisable,
+    Input_EStop,
     Input_ProbeDisconnect,
+    Input_MotorFault,
+    Input_MotorWarning,
+    Input_LimitsOverride,
+    Input_SingleBlock,
+    Input_Unassigned,
+    Input_ProbeOvertravel,
+    Input_Probe,
+// end control_signals_t sequence
     Input_MPGSelect,
     Input_ModeSelect = Input_MPGSelect, // Deprecated
     Input_LimitX,
@@ -70,6 +76,7 @@ typedef enum {
     Input_RX,
     Input_KeypadStrobe, // To be deprecated? Use Input_I2CStrobe instead.
     Input_I2CStrobe,
+    Input_SdCardDetect,
     Input_QEI_A,
     Input_QEI_B,
     Input_QEI_Select,
@@ -92,8 +99,6 @@ typedef enum {
     Input_Analog_Aux5,
     Input_Analog_Aux6,
     Input_Analog_Aux7,
-    Input_MotorWarning,
-    Input_MotorFault,
     Outputs,
     Output_StepX = Outputs,
     Output_StepX_2,
@@ -166,6 +171,12 @@ typedef enum {
     Output_Analog_Aux5,
     Output_Analog_Aux6,
     Output_Analog_Aux7,
+    Output_LED,
+    Output_LED_R,
+    Output_LED_G,
+    Output_LED_B,
+    Output_LED_W,
+    Output_LED_Adressable,
     Bidirectional,
     Bidirectional_SDA = Bidirectional,
     Bidirectional_MotorUARTX,
@@ -188,17 +199,20 @@ typedef struct {
 } pin_name_t;
 
 PROGMEM static const pin_name_t pin_names[] = {
-    { .function = Input_Probe,               .name = "Probe" },
     { .function = Input_Reset,               .name = "Reset" },
     { .function = Input_FeedHold,            .name = "Feed hold" },
     { .function = Input_CycleStart,          .name = "Cycle start" },
     { .function = Input_SafetyDoor,          .name = "Safety door" },
-    { .function = Input_LimitsOverride,      .name = "Limits override" },
-    { .function = Input_EStop,               .name = "Emergency stop" },
     { .function = Input_BlockDelete,         .name = "Block delete" },
-    { .function = Input_SingleBlock,         .name = "Single block" },
     { .function = Input_StopDisable,         .name = "Stop disable" },
+    { .function = Input_EStop,               .name = "Emergency stop" },
     { .function = Input_ProbeDisconnect,     .name = "Probe disconnect" },
+    { .function = Input_MotorFault,          .name = "Motor fault" },
+    { .function = Input_MotorWarning,        .name = "Motor warning" },
+    { .function = Input_LimitsOverride,      .name = "Limits override" },
+    { .function = Input_SingleBlock,         .name = "Single block" },
+    { .function = Input_ProbeOvertravel,     .name = "Probe overtravel" },
+    { .function = Input_Probe,               .name = "Probe" },
     { .function = Input_MPGSelect,           .name = "MPG mode select" },
     { .function = Input_LimitX,              .name = "X limit min" },
     { .function = Input_LimitX_2,            .name = "X limit min 2" },
@@ -217,14 +231,13 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_RX,                  .name = "RX" },
     { .function = Input_KeypadStrobe,        .name = "Keypad strobe" },
     { .function = Input_I2CStrobe,           .name = "I2C strobe" },
+    { .function = Input_SdCardDetect,        .name = "SD card detect" },
     { .function = Input_QEI_A,               .name = "QEI A" },
     { .function = Input_QEI_B,               .name = "QEI B" },
     { .function = Input_QEI_Select,          .name = "QEI select" },
     { .function = Input_QEI_Index,           .name = "QEI index" },
     { .function = Input_SpindleIndex,        .name = "Spindle index" },
     { .function = Input_SpindlePulse,        .name = "Spindle pulse" },
-    { .function = Input_MotorWarning,        .name = "Motor warning" },
-    { .function = Input_MotorFault,          .name = "Motor fault" },
     { .function = Input_Aux0,                .name = "Aux input 0" },
     { .function = Input_Aux1,                .name = "Aux input 1" },
     { .function = Input_Aux2,                .name = "Aux input 2" },
@@ -337,6 +350,12 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Output_Analog_Aux5,        .name = "Aux analog out 5" },
     { .function = Output_Analog_Aux6,        .name = "Aux analog out 6" },
     { .function = Output_Analog_Aux7,        .name = "Aux analog out 7" },
+    { .function = Output_LED,                .name = "LED" },
+    { .function = Output_LED_R,              .name = "LED R" },
+    { .function = Output_LED_G,              .name = "LED G" },
+    { .function = Output_LED_B,              .name = "LED B" },
+    { .function = Output_LED_W,              .name = "LED W" },
+    { .function = Output_LED_Adressable,     .name = "LED adressable" },
     { .function = Bidirectional_SDA,         .name = "SDA" },
     { .function = Bidirectional_MotorUARTX,  .name = "UART X" },
     { .function = Bidirectional_MotorUARTY,  .name = "UART Y" },
@@ -373,6 +392,7 @@ typedef enum {
     PinGroup_UART4,
     PinGroup_USB,
     PinGroup_CAN,
+    PinGroup_LED,
     PinGroup_Home,
 // Interrupt capable pins that may have debounce processing enabled
     PinGroup_Control       = (1<<8),
@@ -422,16 +442,16 @@ typedef enum {
     PullMode_UpDown  = 0b11  //!< 0b11 (0x03) - only used to report port capability.
 } pull_mode_t;
 
-#define PINMODE_NONE     (0)
-#define PINMODE_OUTPUT   (1U<<1)
+#define PINMODE_NONE        (0)
+#define PINMODE_OUTPUT      (1U<<1)
 #ifndef __LPC17XX__
-#define PINMODE_OD       (1U<<2)
+#define PINMODE_OD          (1U<<2)
 #endif
-#define PINMODE_PULLUP   (PullMode_Up<<3)
-#define PINMODE_PULLDOWN (PullMode_Down<<3)
-#define PINMODE_PWM      (1U<<10)
-#define PINMODE_ANALOG   (1U<<11)
-#define PINMODE_REMAP    (1U<<14)
+#define PINMODE_PULLUP      (PullMode_Up<<3)
+#define PINMODE_PULLDOWN    (PullMode_Down<<3)
+#define PINMODE_ANALOG      (1U<<11)
+#define PINMODE_PWM         (1U<<12)
+#define PINMODE_PWM_SERVO   (1U<<13)
 
 typedef union {
     uint16_t mask;
@@ -441,14 +461,33 @@ typedef union {
                  open_drain :1,
                  pull_mode  :2,
                  irq_mode   :5,
-                 pwm        :1,
+                 invert     :1,
                  analog     :1,
-                 peripheral :1,
+                 pwm        :1,
+                 servo_pwm  :1,
+                 claimable  :1,
+                 reserved   :1;
+    };
+} pin_cap_t;
+
+typedef union {
+    uint16_t mask;
+    struct {
+        uint16_t input      :1,
+                 output     :1,
+                 open_drain :1,
+                 pull_mode  :2,
+                 irq_mode   :5,
+                 inverted   :1,
+                 analog     :1,
+                 pwm        :1,
+                 servo_pwm  :1,
                  claimed    :1,
-                 remapped   :1,
-                 can_remap  :1;
+                 reserved   :1;
     };
 } pin_mode_t;
+
+#define XBAR_SET_CAP(cap, mode) { cap.mask = mode.mask; cap.claimable = !mode.claimed; }
 
 //! /a cfg_data argument to /a xbar_config_ptr for PWM pins
 typedef struct {
@@ -459,28 +498,56 @@ typedef struct {
     float min_value; // percent of period
     float max_value; // percent of period
     bool invert;
+    bool servo_mode;
 } pwm_config_t;
+
+typedef union
+  {
+//    pin_mode_t *pin_mode;
+    pwm_config_t *pwm_config;
+  } xbar_cfg_ptr_t __attribute__ ((__transparent_union__));
 
 struct xbar;
 
 typedef float (*xbar_get_value_ptr)(struct xbar *pin);
 typedef void (*xbar_set_value_ptr)(struct xbar *pin, float value);
 typedef void (*xbar_event_ptr)(bool on);
-typedef void (*xbar_config_ptr)(struct xbar *pin, void *cfg_data);
+typedef bool (*xbar_config_ptr)(struct xbar *pin, xbar_cfg_ptr_t cfg_data);
+
+typedef enum {
+    AuxCtrl_SafetyDoor = 0,
+    AuxCtrl_MotorFault,
+    AuxCtrl_MotorWarning,
+    AuxCtrl_ProbeDisconnect,
+    AuxCtrl_StopDisable,
+    AuxCtrl_BlockDelete,
+    AuxCtrl_SingleBlock,
+    AuxCtrl_LimitsOverride,
+    AuxCtrl_NumEntries,
+} aux_ctrl_signals_t;
+
+typedef struct {
+    bool enabled;
+    volatile bool debouncing;
+    uint8_t port;
+    pin_irq_mode_t irq_mode;
+    control_signals_t cap;
+    pin_function_t function;
+} aux_ctrl_t;
 
 typedef struct xbar {
-    pin_function_t function;
-    pin_group_t group;
-    void *port;
-    const char *description;
-    uint_fast8_t pin;
-    uint32_t bit;
-    pin_mode_t mode;
-    pin_mode_t cap;
-    xbar_config_ptr config;
-    xbar_get_value_ptr get_value;
-    xbar_set_value_ptr set_value;
-    xbar_event_ptr on_event; // ?? - remove?
+    pin_function_t function;        //!< Pin function.
+    pin_group_t group;              //!< Pin group.
+    void *port;                     //!< Optional pointer to the underlying peripheral or pin specific data.
+    const char *description;        //!< Optional pointer to description string.
+    uint_fast8_t pin;               //!< Pin number.
+    uint32_t bit;                   //!< Pin bit, 1 << pin.
+    pin_cap_t cap;                  //!< Pin capabilities.
+    pin_mode_t mode;                //!< Current pin configuration.
+    xbar_config_ptr config;         //!< Optional pointer to function for configuring the port.
+    xbar_get_value_ptr get_value;   //!< Optional pointer to function to get current port value.
+    xbar_set_value_ptr set_value;   //!< Optional pointer to function to set port value.
+    xbar_event_ptr on_event;        //!< Not used - might be removed.
 } xbar_t;
 
 typedef struct {
@@ -501,5 +568,7 @@ void xbar_set_homing_source (void);
 limit_signals_t xbar_get_homing_source (void);
 limit_signals_t xbar_get_homing_source_from_cycle (axes_signals_t homing_cycle);
 axes_signals_t xbar_fn_to_axismask (pin_function_t id);
+const char *xbar_fn_to_pinname (pin_function_t id);
+control_signals_t xbar_fn_to_signals_mask (pin_function_t id);
 
 #endif

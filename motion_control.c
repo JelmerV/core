@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2023 Terje Io
+  Copyright (c) 2017-2024 Terje Io
   Copyright (c) 2011-2016 Sungeun K. Jeon for Gnea Research LLC
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -77,7 +77,6 @@ void mc_sync_backlash_position (void)
 // in the planner and to let backlash compensation or canned cycle integration simple and direct.
 bool mc_line (float *target, plan_line_data_t *pl_data)
 {
-
 #ifdef KINEMATICS_API
     float feed_rate = pl_data->feed_rate;
     pl_data->rate_multiplier = 1.0;
@@ -86,12 +85,11 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
 
     // If enabled, check for soft limit violations. Placed here all line motions are picked up
     // from everywhere in Grbl.
-    // NOTE: Block jog motions. Jogging is a special case and soft limits are handled independently.
-    if (!pl_data->condition.target_validated && settings.limits.flags.soft_enabled)
-        limits_soft_check(target);
+    if(!(pl_data->condition.target_validated && pl_data->condition.target_valid))
+        limits_soft_check(target, pl_data->condition);
 
     // If in check gcode mode, prevent motion by blocking planner. Soft limits still work.
-    if (state_get() != STATE_CHECK_MODE && protocol_execute_realtime()) {
+    if(state_get() != STATE_CHECK_MODE && protocol_execute_realtime()) {
 
         // NOTE: Backlash compensation may be installed here. It will need direction info to track when
         // to insert a backlash line motion(s) before the intended line motion and will require its own
@@ -108,7 +106,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // parser and planner are separate from the system machine positions, this is doable.
 
 #ifdef KINEMATICS_API
-       while(kinematics.segment_line(target, NULL, pl_data, false)) {
+      while(kinematics.segment_line(target, NULL, pl_data, false)) {
 #endif
 
 #if ENABLE_BACKLASH_COMPENSATION
@@ -178,7 +176,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // if there is a coincident position passed.
         if(!plan_buffer_line(target, pl_data) && pl_data->spindle.hal->cap.laser && pl_data->spindle.state.on && !pl_data->spindle.state.ccw) {
             protocol_buffer_synchronize();
-            pl_data->spindle.hal->set_state(pl_data->spindle.state, pl_data->spindle.rpm);
+            pl_data->spindle.hal->set_state(pl_data->spindle.hal, pl_data->spindle.state, pl_data->spindle.rpm);
         }
 
 #ifdef KINEMATICS_API
@@ -192,37 +190,59 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         }
 
         pl_data->feed_rate = feed_rate;
-      }
+      } // while(kinematics.segment_line()
+
+      pl_data->feed_rate = feed_rate;
 #endif
     }
 
     return !ABORTED;
 }
 
-
 // Execute an arc in offset mode format. position == current xyz, target == target xyz,
-// offset == offset from current xyz, axis_X defines circle plane in tool space, axis_linear is
-// the direction of helical travel, radius == circle radius, isclockwise boolean. Used
-// for vector transformation direction.
+// offset == offset from current xyz, plane.axis_X defines circle plane in tool space, plane.axis_linear is
+// the direction of helical travel, radius == circle radius, turns > 0 for CCW arcs. Used
+// for vector transformation direction and number of full turns to add (abs(turns) - 1).
 // The arc is approximated by generating a huge number of tiny, linear segments. The chordal tolerance
 // of each segment is configured in settings.arc_tolerance, which is defined to be the maximum normal
 // distance from segment to the circle when the end points both lie on the circle.
 void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *offset, float radius, plane_t plane, int32_t turns)
 {
-    double center_axis0 = (double)position[plane.axis_0] + (double)offset[plane.axis_0];
-    double center_axis1 = (double)position[plane.axis_1] + (double)offset[plane.axis_1];
-    double r_axis0 = -(double)offset[plane.axis_0];  // Radius vector from center to current location
-    double r_axis1 = -(double)offset[plane.axis_1];
-    double rt_axis0 = (double)target[plane.axis_0] - center_axis0;
-    double rt_axis1 = (double)target[plane.axis_1] - center_axis1;
+    typedef union {
+        double values[2];
+        struct {
+            double x;
+            double y;
+        };
+    } point_2dd_t;
+
+    point_2dd_t rv = {  // Radius vector from center to current location
+        .x = -(double)offset[plane.axis_0],
+        .y = -(double)offset[plane.axis_1]
+    };
+    point_2dd_t center = {
+        .x = (double)position[plane.axis_0] - rv.x,
+        .y = (double)position[plane.axis_1] - rv.y
+    };
+    point_2dd_t rt = {
+        .x = (double)target[plane.axis_0] - center.x,
+        .y = (double)target[plane.axis_1] - center.y
+    };
     // CCW angle between position and target from circle center. Only one atan2() trig computation required.
-    float angular_travel = (float)atan2(r_axis0 * rt_axis1 - r_axis1 * rt_axis0, r_axis0 * rt_axis0 + r_axis1 * rt_axis1);
+    float angular_travel = (float)atan2(rv.x * rt.y - rv.y * rt.x, rv.x * rt.x + rv.y * rt.y);
 
     if (turns > 0) { // Correct atan2 output per direction
-        if (angular_travel >= -ARC_ANGULAR_TRAVEL_EPSILON)
-            angular_travel -= 2.0f * M_PI;
-    } else if (angular_travel <= ARC_ANGULAR_TRAVEL_EPSILON)
-        angular_travel += 2.0f * M_PI;
+        if (angular_travel <= ARC_ANGULAR_TRAVEL_EPSILON)
+            angular_travel += 2.0f * M_PI;
+    } else if (angular_travel >= -ARC_ANGULAR_TRAVEL_EPSILON)
+        angular_travel -= 2.0f * M_PI;
+
+    if(!pl_data->condition.target_validated && grbl.check_arc_travel_limits) {
+        pl_data->condition.target_validated = On;
+        pl_data->condition.target_valid = grbl.check_arc_travel_limits((coord_data_t *)target, (coord_data_t *)position,
+                                                                        (point_2d_t){ .x = (float)center.x, .y = (float)center.y },
+                                                                         radius, plane, turns);
+    }
 
     if(labs(turns) > 1) {
 
@@ -267,9 +287,13 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
     // (2x) settings.arc_tolerance. For 99% of users, this is just fine. If a different arc segment fit
     // is desired, i.e. least-squares, midpoint on arc, just change the mm_per_arc_segment calculation.
     // For the intended uses of Grbl, this value shouldn't exceed 2000 for the strictest of cases.
-    uint16_t segments = (uint16_t)floorf(fabsf(0.5f * angular_travel * radius) / sqrtf(settings.arc_tolerance * (2.0f * radius - settings.arc_tolerance)));
 
-    if (segments) {
+    uint_fast16_t segments = 0;
+
+    if(2.0f * radius > settings.arc_tolerance)
+        segments = (uint_fast16_t)floorf(fabsf(0.5f * angular_travel * radius) / sqrtf(settings.arc_tolerance * (2.0f * radius - settings.arc_tolerance)));
+
+    if(segments) {
 
         // Multiply inverse feed_rate to compensate for the fact that this movement is approximated
         // by a number of discrete segments. The inverse feed_rate should be correct for the sum of
@@ -331,24 +355,24 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
         for (i = 1; i < segments; i++) { // Increment (segments-1).
 
             if (count < N_ARC_CORRECTION) {
-                // Apply vector rotation matrix. ~40 usec
-                r_axisi = r_axis0 * sin_T + r_axis1 * cos_T;
-                r_axis0 = r_axis0 * cos_T - r_axis1 * sin_T;
-                r_axis1 = r_axisi;
+                // Apply vector rotation matrix.
+                r_axisi = rv.x * sin_T + rv.y * cos_T;
+                rv.x = rv.x * cos_T - rv.y * sin_T;
+                rv.y = r_axisi;
                 count++;
             } else {
                 // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments.
                 // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
                 cos_Ti = cosf(i * theta_per_segment);
                 sin_Ti = sinf(i * theta_per_segment);
-                r_axis0 = -offset[plane.axis_0] * cos_Ti + offset[plane.axis_1] * sin_Ti;
-                r_axis1 = -offset[plane.axis_0] * sin_Ti - offset[plane.axis_1] * cos_Ti;
+                rv.x = -offset[plane.axis_0] * cos_Ti + offset[plane.axis_1] * sin_Ti;
+                rv.y = -offset[plane.axis_0] * sin_Ti - offset[plane.axis_1] * cos_Ti;
                 count = 0;
             }
 
             // Update arc_target location
-            position[plane.axis_0] = center_axis0 + r_axis0;
-            position[plane.axis_1] = center_axis1 + r_axis1;
+            position[plane.axis_0] = center.x + rv.x;
+            position[plane.axis_1] = center.y + rv.y;
 #if N_AXIS > 3
             idx = N_AXIS;
             do {
@@ -546,35 +570,35 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
             return;
     }
 
+    float position_linear = position[plane.axis_linear],
+          retract_to = canned->retract_mode == CCRetractMode_RPos ? canned->retract_position : position_linear;
+
     // rapid move to X, Y
     memcpy(position, target, sizeof(float) * N_AXIS);
-    position[plane.axis_linear] = canned->prev_position > canned->retract_position ? canned->prev_position : canned->retract_position;
+    position[plane.axis_linear] = position_linear;
     if(!mc_line(position, pl_data))
         return;
 
-    // if current Z > R, rapid move to R
-    if(position[plane.axis_linear] > canned->retract_position) {
-        position[plane.axis_linear] = canned->retract_position;
-        if(!mc_line(position, pl_data))
-            return;
-    }
-
-    if(canned->retract_mode == CCRetractMode_RPos)
-        canned->prev_position = canned->retract_position;
-
     while(repeats--) {
 
-        float current_z = canned->retract_position;
+        // if current Z > R, rapid move to R
+        if(position[plane.axis_linear] > canned->retract_position) {
+            position[plane.axis_linear] = canned->retract_position;
+            if(!mc_line(position, pl_data))
+                return;
+        }
 
-        while(current_z > canned->xyz[plane.axis_linear]) {
+        position_linear = position[plane.axis_linear];
 
-            current_z -= canned->delta;
-            if(current_z < canned->xyz[plane.axis_linear])
-                current_z = canned->xyz[plane.axis_linear];
+        while(position_linear > canned->xyz[plane.axis_linear]) {
+
+            position_linear -= canned->delta;
+            if(position_linear < canned->xyz[plane.axis_linear])
+                position_linear = canned->xyz[plane.axis_linear];
 
             pl_data->condition.rapid_motion = Off;
 
-            position[plane.axis_linear] = current_z;
+            position[plane.axis_linear] = position_linear;
             if(!mc_line(position, pl_data)) // drill
                 return;
 
@@ -582,19 +606,19 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                 mc_dwell(canned->dwell);
 
             if(canned->spindle_off)
-                pl_data->spindle.hal->set_state((spindle_state_t){0}, 0.0f);
+                pl_data->spindle.hal->set_state(pl_data->spindle.hal, (spindle_state_t){0}, 0.0f);
 
             // rapid retract
             switch(motion) {
 
                 case MotionMode_DrillChipBreak:
                     position[plane.axis_linear] = position[plane.axis_linear] == canned->xyz[plane.axis_linear]
-                                                   ? canned->retract_position
+                                                   ? retract_to
                                                    : position[plane.axis_linear] + settings.g73_retract;
                     break;
 
                 default:
-                    position[plane.axis_linear] = canned->retract_position;
+                    position[plane.axis_linear] = retract_to;
                     break;
             }
 
@@ -606,6 +630,8 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                 spindle_sync(pl_data->spindle.hal, gc_state.modal.spindle.state, pl_data->spindle.rpm);
         }
 
+        pl_data->condition.rapid_motion = On; // Set rapid motion condition flag.
+
        // rapid move to next position if incremental mode
         if(repeats && gc_state.modal.distance_incremental) {
             position[plane.axis_0] += canned->xyz[plane.axis_0];
@@ -616,13 +642,6 @@ void mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
     }
 
     memcpy(target, position, sizeof(float) * N_AXIS);
-
-    if(canned->retract_mode == CCRetractMode_Previous && motion != MotionMode_DrillChipBreak && target[plane.axis_linear] < canned->prev_position) {
-        pl_data->condition.rapid_motion = On;
-        target[plane.axis_linear] = canned->prev_position;
-        if(!mc_line(target, pl_data))
-            return;
-    }
 }
 
 // Calculates depth-of-cut (DOC) for a given threading pass.
@@ -761,14 +780,15 @@ status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_bloc
     // Initialize planner data struct for jogging motions.
     // NOTE: Spindle and coolant are allowed to fully function with overrides during a jog.
     pl_data->feed_rate = gc_block->values.f;
-    pl_data->condition.no_feed_override = On;
-    pl_data->condition.jog_motion = On;
+    pl_data->condition.no_feed_override =
+    pl_data->condition.jog_motion =
+    pl_data->condition.target_valid =
     pl_data->condition.target_validated = On;
     pl_data->line_number = gc_block->values.n;
 
     if(settings.limits.flags.jog_soft_limited)
         grbl.apply_jog_limits(gc_block->values.xyz, position);
-    else if (settings.limits.flags.soft_enabled && !grbl.check_travel_limits(gc_block->values.xyz, true))
+    else if(sys.soft_limits.mask && !grbl.check_travel_limits(gc_block->values.xyz, sys.soft_limits, true))
         return Status_TravelExceeded;
 
     // Valid jog command. Plan, set state, and execute.
@@ -854,10 +874,10 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
         }
 #endif
 
-        state_set(STATE_HOMING);                                // Set homing system state.
+        state_set(STATE_HOMING);                        // Set homing system state.
 #if COMPATIBILITY_LEVEL == 0
-        protocol_enqueue_realtime_command(CMD_STATUS_REPORT);   // Force a status report and
-        delay_sec(0.1f, DelayMode_Dwell);                       // delay a bit to get it sent (or perhaps wait a bit for a request?)
+        system_set_exec_state_flag(EXEC_STATUS_REPORT); // Force a status report and
+        delay_sec(0.1f, DelayMode_Dwell);               // delay a bit to get it sent (or perhaps wait a bit for a request?)
 #endif
         // Turn off spindle and coolant (and update parser state)
         if(spindle_is_on())
@@ -933,7 +953,9 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
 
     system_add_rt_report(Report_Homed);
 
-    homed_status = settings.limits.flags.hard_enabled && settings.limits.flags.check_at_init && limit_signals_merge(hal.limits.get_state()).value
+    homed_status = settings.limits.flags.hard_enabled &&
+                    settings.limits.flags.check_at_init &&
+                     (limit_signals_merge(hal.limits.get_state()).value & sys.hard_limits.mask)
                     ? Status_LimitsEngaged
                     : Status_OK;
 
@@ -998,7 +1020,7 @@ gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_f
 
         do {
             idx--;
-            if(position.values[idx] != target[idx])
+            if(fabsf(target[idx] - position.values[idx]) > TOLERANCE_EQUAL)
                 bit_true(axes.mask, bit(idx));
         } while(idx--);
 
@@ -1117,9 +1139,11 @@ ISR_CODE void ISR_FUNC(mc_reset)(void)
             st_go_idle(); // Force kill steppers. Position has likely been lost.
         }
 
-        if(hal.control.get_state().e_stop)
+        control_signals_t signals = hal.control.get_state();
+
+        if(signals.e_stop)
             system_set_exec_alarm(Alarm_EStop);
-        else if(hal.control.get_state().motor_fault)
+        else if(signals.motor_fault)
             system_set_exec_alarm(Alarm_MotorFault);
 
         if(grbl.on_reset)

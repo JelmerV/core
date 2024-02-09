@@ -313,6 +313,10 @@ typedef enum {
     Setting_FanToSpindleLink = 483,
     Setting_UnlockAfterEStop = 484,
     Setting_EnableToolPersistence = 485,
+    Setting_OffsetLock = 486,
+    Setting_Spindle_OnPort = 487,
+    Setting_Spindle_DirPort = 488,
+    Setting_Spindle_PWMPort = 489,
 
     Setting_Macro0 = 490,
     Setting_Macro1 = 491,
@@ -344,6 +348,7 @@ typedef enum {
     Setting_SpindleEnable5 = 515,
     Setting_SpindleEnable6 = 516,
     Setting_SpindleEnable7 = 517,
+    Setting_EncoderSpindle = 519,
 
     Setting_SpindleToolStart0 = 520,
     Setting_SpindleToolStart1 = 521,
@@ -360,6 +365,9 @@ typedef enum {
     Setting_MQTTBrokerPassword  = 533,
 
     Setting_NGCDebugOut = 534,
+    Setting_NetworkMAC = 535,
+    Setting_RGB_StripLengt0 = 536,
+    Setting_RGB_StripLengt1 = 537,
 
     Setting_Panel_SpindleSpeed       = 540,  // NOTE: Reserving settings values 540 to 579 for panel settings.
     Setting_Panel_ModbusAddress      = 541,
@@ -400,6 +408,23 @@ typedef enum {
     Setting_Kinematics8         = 648,
     Setting_Kinematics9         = 649,
 
+    Setting_FSOptions = 650,
+
+    Setting_RpmMax1 = 730,
+    Setting_RpmMin1 = 731,
+    Setting_Mode1 = 732,
+    Setting_PWMFreq1 = 733,
+    Setting_PWMOffValue1 = 734,
+    Setting_PWMMinValue1 = 735,
+    Setting_PWMMaxValue1 = 736,
+// Optional driver implemented settings for piecewise linear spindle PWM algorithm
+    Setting_LinearSpindle1Piece1 = 737,
+    Setting_LinearSpindle1Piece2 = 738,
+    Setting_LinearSpindle1Piece3 = 739,
+    Setting_LinearSpindle1Piece4 = 740,
+//
+// 900-999 - reserved for automatic tool changers (ATC)
+//
     Setting_SettingsMax,
     Setting_SettingsAll = Setting_SettingsMax,
 
@@ -523,7 +548,8 @@ typedef union {
         uint8_t enabled                 :1,
                 deactivate_upon_init    :1,
                 enable_override_control :1,
-                unassigned              :5;
+                unassigned              :2,
+                offset_lock             :3;
     };
 } parking_setting_flags_t;
 
@@ -535,44 +561,6 @@ typedef struct {
     float pullout_rate;         // Pull-out/plunge slow feed rate in mm/min.
     float pullout_increment;    // Spindle pull-out and plunge distance in mm. Incremental distance.
 } parking_settings_t;
-
-typedef struct {
-    float p_gain;
-    float i_gain;
-    float d_gain;
-    float p_max_error;
-    float i_max_error;
-    float d_max_error;
-    float deadband;
-    float max_error;
-} pid_values_t;
-
-typedef union {
-    uint8_t value;
-    uint8_t mask;
-    struct {
-        uint8_t enable_rpm_controlled :1, // PWM spindle only
-                unused                :1,
-                type                  :5,
-                pwm_disable           :1; // PWM spindle only
-    };
-} spindle_settings_flags_t;
-
-typedef struct {
-    float rpm_max;
-    float rpm_min;
-    float pwm_freq;
-    float pwm_period;
-    float pwm_off_value;
-    float pwm_min_value;
-    float pwm_max_value;
-    float at_speed_tolerance;
-    pwm_piece_t pwm_piece[SPINDLE_NPWM_PIECES];
-    pid_values_t pid;
-    uint16_t ppr; // Spindle encoder pulses per revolution
-    spindle_state_t invert;
-    spindle_settings_flags_t flags;
-} spindle_settings_t;
 
 typedef struct {
     pid_values_t pid;
@@ -638,12 +626,13 @@ typedef struct {
 typedef union {
     uint8_t value;
     struct {
-        uint8_t hard_enabled     :1,
-                soft_enabled     :1,
-                check_at_init    :1,
-                jog_soft_limited :1,
-                two_switches     :1,
-                unassigned       :3;
+        uint8_t hard_enabled         :1,
+                soft_enabled         :1,
+                check_at_init        :1,
+                jog_soft_limited     :1,
+                two_switches         :1,
+                hard_disabled_rotary :1,
+                unassigned           :2;
     };
 } limit_settings_flags_t;
 
@@ -651,7 +640,29 @@ typedef struct {
     limit_settings_flags_t flags;
     axes_signals_t invert;
     axes_signals_t disable_pullup;
+//    axes_signals_t soft_enabled; // TODO: add per axis soft limits, replace soft_enabled flag
 } limit_settings_t;
+
+typedef union {
+    uint8_t value;
+    uint8_t mask;
+    struct {
+        uint8_t sd_mount_on_boot  :1,
+                lfs_hidden        :1,
+                unused            :6;
+    };
+} fs_options_t;
+
+typedef union {
+    uint8_t value;
+    uint8_t mask;
+    struct {
+        uint8_t g59_1  :1,
+                g59_2  :1,
+                g59_3  :1,
+                encoder_spindle :5; // TODO: move to spindle settings
+    };
+} offset_lock_t;
 
 typedef union {
     uint8_t value;
@@ -695,6 +706,7 @@ typedef struct {
 typedef struct {
     // Settings struct version
     uint32_t version;
+//    uint32_t build_date;  // TODO: add in next settings version?, set to GRBL_BUILD
     float junction_deviation;
     float arc_tolerance;
     float g73_retract;
@@ -707,13 +719,19 @@ typedef struct {
     control_signals_t control_invert;
     control_signals_t control_disable_pullup;
     coolant_state_t coolant_invert;
+    uint8_t hole_0;
+    uint16_t hole_1;
     spindle_settings_t spindle;
     stepper_settings_t steppers;
     reportmask_t status_report; // Mask to indicate desired report data.
     settingflags_t flags;       // Contains default boolean settings
     probeflags_t probe;
+    uint8_t rgb_strip0_length;
+    offset_lock_t offset_lock;
+    fs_options_t fs_options;
     homing_settings_t homing;
     limit_settings_t limits;
+    uint8_t rgb_strip1_length;
     parking_settings_t parking;
     safety_door_settings_t safety_door;
     position_pid_t position;    // Used for synchronized motion
@@ -943,12 +961,6 @@ void settings_write_coord_data(coord_system_id_t id, float (*coord_data)[N_AXIS]
 
 // Reads selected coordinate data from persistent storage
 bool settings_read_coord_data(coord_system_id_t id, float (*coord_data)[N_AXIS]);
-
-// Writes selected tool data to persistent storage
-bool settings_write_tool_data (tool_data_t *tool_data);
-
-// Read selected tool data from persistent storage
-bool settings_read_tool_data (uint32_t tool, tool_data_t *tool_data);
 
 // Temporarily override acceleration, if 0 restore to configured setting value
 bool settings_override_acceleration (uint8_t axis, float acceleration);

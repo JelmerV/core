@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2023 Terje Io
+  Copyright (c) 2020-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -186,8 +186,19 @@ the speed is not limited to 115200 baud. An example is native USB streaming.
 #define CHECK_MODE_DELAY 0 // ms
 #endif
 
+/*! \def DEBOUNCE_DELAY
+\brief
+When > 0 adds a short delay when an input changes state to avoid switch bounce
+or EMI triggering the related interrupt falsely or too many times.
+*/
+#if !defined DEBOUNCE_DELAY || defined __DOXYGEN__
+#define DEBOUNCE_DELAY 40 // ms
+#endif
+
 // ---------------------------------------------------------------------------------------
 // ADVANCED CONFIGURATION OPTIONS:
+
+#define ENABLE_PATH_BLENDING Off // Do NOT enable unless working on adding this feature!
 
 // Enables code for debugging purposes. Not for general use and always in constant flux.
 //#define DEBUG // Uncomment to enable. Default disabled.
@@ -503,7 +514,7 @@ by a driver or a plugin.
 #if COMPATIBILITY_LEVEL == 0 || defined __DOXYGEN__
 /*! \def N_TOOLS
 \brief
-Number of tools in tool table, edit to enable (max. 16 allowed)
+Number of tools in tool table, edit to enable (max. 32 allowed)
 */
 #if !defined N_TOOLS || defined __DOXYGEN__
 #define N_TOOLS 0
@@ -526,6 +537,14 @@ Maximum number of parameters allowed in a block.
 */
 #if (NGC_EXPRESSIONS_ENABLE && !defined NGC_N_ASSIGN_PARAMETERS_PER_BLOCK) || defined __DOXYGEN__
 #define NGC_N_ASSIGN_PARAMETERS_PER_BLOCK 10
+#endif
+
+/*! \def LATHE_UVW_OPTION
+\brief
+Allow use of UVW axis words for non-modal relative lathe motion.
+*/
+#if !defined LATHE_UVW_OPTION || defined __DOXYGEN__
+#define LATHE_UVW_OPTION Off
 #endif
 
 // Max number of entries in log for PID data reporting, to be used for tuning
@@ -821,7 +840,7 @@ having trouble keeping up with planning new incoming motions as they are execute
  */
 ///@{
 #if !defined DEFAULT_PLANNER_BUFFER_BLOCKS || defined __DOXYGEN__
-#define DEFAULT_PLANNER_BUFFER_BLOCKS 35
+#define DEFAULT_PLANNER_BUFFER_BLOCKS 100
 #endif
 ///@}
 
@@ -928,6 +947,9 @@ not throw an alarm message.
 #endif
 #if !defined DEFAULT_CHECK_LIMITS_AT_INIT || defined __DOXYGEN__
 #define DEFAULT_CHECK_LIMITS_AT_INIT Off
+#endif
+#if !defined DEFAULT_HARD_LIMITS_DISABLE_FOR_ROTARY || defined __DOXYGEN__
+#define DEFAULT_HARD_LIMITS_DISABLE_FOR_ROTARY Off
 #endif
 
 /*! @name Group_Limits_DualAxis
@@ -1646,7 +1668,7 @@ since the spindle may pull down the Z due to its weight.
 
 /*! @name $2 - Setting_StepInvertMask
 \brief \ref axismask controlling the polarity of the step signals. The default is positive pulses.
-Set this value to -1 to invert for all steppers or specify which by mask.
+Set this value to -1 or AXES_BITMASK to invert for all steppers or specify which by mask.
 */
 ///@{
 #if !defined DEFAULT_STEP_SIGNALS_INVERT_MASK || defined __DOXYGEN__
@@ -1657,7 +1679,7 @@ Set this value to -1 to invert for all steppers or specify which by mask.
 /*! @name $3 - Setting_DirInvertMask
 \brief \ref axismask controling the polarity of the stepper direction signals. The default
 is positive voltage for motions in negative direction.
-Set this value to -1 to invert for all steppers or specify which by mask.*/
+Set this value to -1 or AXES_BITMASK to invert for all steppers or specify which by mask.*/
 ///@{
 #if !defined DEFAULT_DIR_SIGNALS_INVERT_MASK || defined __DOXYGEN__
 #define DEFAULT_DIR_SIGNALS_INVERT_MASK 0
@@ -1666,6 +1688,8 @@ Set this value to -1 to invert for all steppers or specify which by mask.*/
 
 /*! @name $4 - Setting_InvertStepperEnable
 \brief \ref axismask for inverting the polarity of the stepper enable signal(s).
+
+Set this value to -1 or AXES_BITMASK to invert for all steppers or specify which by mask.
 <br>__NOTE:__ If \ref COMPATIBILITY_LEVEL > 2 this setting reverts to the legacy
               Grbl behaviour where 0 inverts the enable signals for all drivers
               and 1 does not.
@@ -1675,9 +1699,7 @@ Set this value to -1 to invert for all steppers or specify which by mask.*/
 */
 ///@{
 #if !defined DEFAULT_ENABLE_SIGNALS_INVERT_MASK || defined __DOXYGEN__
-#define DEFAULT_ENABLE_SIGNALS_INVERT_MASK (X_AXIS_BIT|Y_AXIS_BIT|Z_AXIS_BIT) // Default disabled. Uncomment to enable.
-#else
-//#define DEFAULT_ENABLE_SIGNALS_INVERT_MASK 1
+#define DEFAULT_ENABLE_SIGNALS_INVERT_MASK AXES_BITMASK
 #endif
 ///@}
 
@@ -1865,28 +1887,28 @@ __NOTE:__ Must be a positive values.
  */
 ///@{
 #if !defined DEFAULT_X_CURRENT || defined __DOXYGEN__
-#define DEFAULT_X_CURRENT 0.0 // mA
+#define DEFAULT_X_CURRENT 500.0f // mA RMS
 #endif
 #if !defined DEFAULT_Y_CURRENT || defined __DOXYGEN__
-#define DEFAULT_Y_CURRENT 0.0 // mA
+#define DEFAULT_Y_CURRENT 500.0f // mA RMS
 #endif
 #if !defined DEFAULT_Z_CURRENT || defined __DOXYGEN__
-#define DEFAULT_Z_CURRENT 0.0 // mA
+#define DEFAULT_Z_CURRENT 500.0f // mA RMS
 #endif
 #if (defined A_AXIS && !defined DEFAULT_A_CURRENT) || defined __DOXYGEN__
-#define DEFAULT_A_CURRENT 0.0 // mA
+#define DEFAULT_A_CURRENT 500.0f // mA RMS
 #endif
 #if (defined B_AXIS && !defined DEFAULT_B_CURRENT) || defined __DOXYGEN__
-#define DEFAULT_B_CURRENT 0.0 // mA
+#define DEFAULT_B_CURRENT 500.0f // mA RMS
 #endif
 #if (defined C_AXIS && !defined DEFAULT_C_CURRENT) || defined __DOXYGEN__
-#define DEFAULT_C_CURRENT 0.0 // mA
+#define DEFAULT_C_CURRENT 500.0f // mA RMS
 #endif
 #if (defined U_AXIS && !defined DEFAULT_U_CURRENT) || defined __DOXYGEN__
-#define DEFAULT_U_CURRENT 0.0 // mA
+#define DEFAULT_U_CURRENT 500.0f // mA RMS
 #endif
 #if (defined V_AXIS && !defined DEFAULT_V_CURRENT) || defined __DOXYGEN__
-#define DEFAULT_V_CURRENT 0.0 // mA
+#define DEFAULT_V_CURRENT 500.0f // mA RMS
 #endif
 ///@}
 
@@ -1897,9 +1919,9 @@ __NOTE:__ Must be a positive values.
 #undef N_TOOLS
 #endif
 
-#if defined(N_TOOLS) && N_TOOLS > 16
+#if defined(N_TOOLS) && N_TOOLS > 32
 #undef N_TOOLS
-#define N_TOOLS 16
+#define N_TOOLS 32
 #endif
 
 #if N_SYS_SPINDLE > N_SPINDLE
@@ -1932,6 +1954,12 @@ __NOTE:__ Must be a positive values.
 
 #if DEFAULT_LASER_MODE && DEFAULT_LATHE_MODE
 #error "Cannot enable laser and lathe mode at the same time!"
+#endif
+
+#if LATHE_UVW_OPTION && (N_AXIS > 6 || AXIS_REMAP_ABC2UVW)
+#warning "Cannot enable lathe UVW option when N_AXIS > 6 or ABC words are remapped!"
+#undef LATHE_UVW_OPTION
+#define LATHE_UVW_OPTION Off
 #endif
 
 #if DEFAULT_CONTROL_SIGNALS_INVERT_MASK < 0

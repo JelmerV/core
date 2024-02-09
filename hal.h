@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2016-2023 Terje Io
+  Copyright (c) 2016-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -38,6 +38,7 @@
 #include "nvs.h"
 #include "probe.h"
 #include "ioports.h"
+#include "rgb.h"
 #include "plugins.h"
 
 #define HAL_VERSION 10
@@ -53,8 +54,10 @@ typedef union {
                  control_pull_up           :1, //!< Pullup resistors for control inputs are supported.
                  probe_pull_up             :1, //!< Pullup resistors for probe inputs are supported.
                  amass_level               :2, // 0...3 Deprecated?
+                 spindle_encoder           :1, //!< Spindle encoder is supported.
                  spindle_sync              :1, //!< Spindle synced motion is supported.
                  sd_card                   :1,
+                 littlefs                  :1,
                  bluetooth                 :1,
                  ethernet                  :1,
                  wifi                      :1,
@@ -66,7 +69,7 @@ typedef union {
                  odometers                 :1,
                  pwm_spindle               :1,
                  probe_latch               :1,
-                 unassigned                :11;
+                 unassigned                :9;
     };
 } driver_cap_t;
 
@@ -504,6 +507,8 @@ typedef struct {
     rtc_set_datetime_ptr set_datetime;  //!< Optional handler setting the current datetime.
 } rtc_ptrs_t;
 
+/**/
+
 /*! \brief Pointer to function for performing a pallet shuttle.
 */
 typedef void (*pallet_shuttle_ptr)(void);
@@ -593,12 +598,14 @@ typedef struct {
     tool_ptrs_t tool;                       //!< Optional handlers for tool changes.
     rtc_ptrs_t rtc;                         //!< Optional handlers for real time clock (RTC).
     io_port_t port;                         //!< Optional handlers for axuillary I/O (adds support for M62-M66).
+    rgb_ptr_t rgb;                          //!< Optional handler for RGB output to LEDs (neopixels) or lamps.
     periph_port_t periph_port;              //!< Optional handlers for peripheral pin registration.
     driver_reset_ptr driver_reset;          //!< Optional handler, called on soft resets. Set to a dummy handler by the core at startup.
     nvs_io_t nvs;                           //!< Optional handlers for storing/retrieving settings and data to/from non-volatile storage (NVS).
     enumerate_pins_ptr enumerate_pins;      //!< Optional handler for enumerating pins used by the driver.
     bool (*driver_release)(void);           //!< Optional handler for releasing hardware resources before exiting.
-    uint32_t (*get_elapsed_ticks)(void);    //!< Optional handler for getting number of elapsed 1ms tics since startup. Required by a number of plugins.
+    uint32_t (*get_elapsed_ticks)(void);    //!< Optional handler for getting number of elapsed 1 ms tics since startup. Rolls over every 49.71 days.  Required by a number of plugins.
+    uint64_t (*get_micros)(void);           //!< Optional handler for getting number of elapsed 1 us tics since startup. Rolls over every 1.19 hours. Required by a number of plugins.
     pallet_shuttle_ptr pallet_shuttle;      //!< Optional handler for performing a pallet shuttle on program end (M60).
     void (*reboot)(void);                   //!< Optoional handler for rebooting the controller. This will be called when #ASCII_ESC followed by #CMD_REBOOT is received.
 

@@ -87,6 +87,11 @@ ISR_CODE void ISR_FUNC(limit_interrupt_handler)(limit_signals_t state) // DEFAUL
     // locked out until a homing cycle or a kill lock command. Allows the user to disable the hard
     // limit setting if their limits are constantly triggering after a reset and move their axes.
 
+#if N_AXIS > 3
+    if((limit_signals_merge(state).value & sys.hard_limits.mask) == 0)
+        return;
+#endif
+
     memcpy(&sys.last_event.limits, &state, sizeof(limit_signals_t));
 
     if (!(state_get() & (STATE_ALARM|STATE_ESTOP)) && !sys.rt_exec_alarm) {
@@ -139,7 +144,7 @@ void limits_set_work_envelope (void)
 void limits_set_machine_positions (axes_signals_t cycle, bool add_pulloff)
 {
     uint_fast8_t idx = N_AXIS;
-    float pulloff = add_pulloff ? settings.homing.pulloff : 0.0f;
+    float pulloff = add_pulloff ? settings.homing.pulloff : -0.0f;
 
     if(settings.homing.flags.force_set_origin) {
         do {
@@ -542,13 +547,14 @@ status_code_t limits_go_home (axes_signals_t cycle)
 // Performs a soft limit check. Called from mc_line() only. Assumes the machine has been homed,
 // the workspace volume is in all negative space, and the system is in normal operation.
 // NOTE: Also used by jogging to block travel outside soft-limit volume.
-void limits_soft_check  (float *target)
+void limits_soft_check (float *target, planner_cond_t condition)
 {
 #ifdef KINEMATICS_API
-    if(!grbl.check_travel_limits(target, false)) {
+    if(condition.target_validated ? !condition.target_valid : !grbl.check_travel_limits(target, sys.soft_limits, false)) {
 #else
-    if(!grbl.check_travel_limits(target, true)) {
+    if(condition.target_validated ? !condition.target_valid : !grbl.check_travel_limits(target, sys.soft_limits, true)) {
 #endif
+
         sys.flags.soft_limit = On;
         // Force feed hold if cycle is active. All buffered blocks are guaranteed to be within
         // workspace volume so just come to a controlled stop so position is not lost. When complete
@@ -594,18 +600,115 @@ static float get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
 }
 
 // Checks and reports if target array exceeds machine travel limits. Returns false if check failed.
-static bool check_travel_limits (float *target, bool is_cartesian)
+static bool check_travel_limits (float *target, axes_signals_t axes, bool is_cartesian)
 {
     bool failed = false;
     uint_fast8_t idx = N_AXIS;
 
-    if(is_cartesian && sys.homed.mask) do {
+    if(is_cartesian && (sys.homed.mask & axes.mask)) do {
         idx--;
-        if(bit_istrue(sys.homed.mask, bit(idx)) && settings.axis[idx].max_travel < -0.0f)
+        if(bit_istrue(sys.homed.mask, bit(idx)) && bit_istrue(axes.mask, bit(idx)))
             failed = target[idx] < sys.work_envelope.min.values[idx] || target[idx] > sys.work_envelope.max.values[idx];
     } while(!failed && idx);
 
     return is_cartesian && !failed;
+}
+
+// Checks and reports if the arc exceeds machine travel limits. Returns false if check failed.
+// NOTE: needs the work envelope to be a cuboid!
+static bool check_arc_travel_limits (coord_data_t *target, coord_data_t *position, point_2d_t center, float radius, plane_t plane, int32_t turns)
+{
+    typedef union {
+        uint_fast8_t value;
+        struct {
+            uint_fast8_t pos_y : 1,
+                         neg_x : 1,
+                         neg_y : 1,
+                         pos_x : 1;
+        };
+    } arc_x_t;
+
+    static const axes_signals_t xyz = { .x = On, .y = On, .z = On };
+
+    if((sys.soft_limits.mask & xyz.mask) == 0)
+        return grbl.check_travel_limits(target->values, sys.soft_limits, true);
+
+    arc_x_t x = {0};
+    point_2d_t start, end;
+
+    // Set arc start and end points centered at 0,0 and convert CW arcs to CCW.
+    if(turns > 0) { // CCW
+        start.x = position->values[plane.axis_0] - center.x;
+        start.y = position->values[plane.axis_1] - center.y;
+        end.x = target->values[plane.axis_0] - center.x;
+        end.y = target->values[plane.axis_1] - center.y;
+    } else { // CW
+        start.x = target->values[plane.axis_0] - center.x;
+        start.y = target->values[plane.axis_1] - center.y;
+        end.x = position->values[plane.axis_0] - center.x;
+        end.y = position->values[plane.axis_1] - center.y;
+    }
+
+    if(labs(turns > 1))
+        x.value = 0b1111;                   // Crosses all
+    else if(start.y >= 0.0f) {
+        if(start.x > 0.0f) {                // Starts in Q1
+            if(end.y >= 0.0f) {
+                if(end.x <= 0.0f)
+                    x.value = 0b0001;       // Ends in Q2
+                else if(end.x >= start.x)
+                    x.value = 0b1111;       // Ends in Q1, crosses all
+            } else if(end.x <= 0.0f)
+                x.value = 0b0011;           // Ends in Q3
+            else
+                x.value = 0b0111;           // Ends in Q4
+        } else {                            // Starts in Q2
+            if(end.y >= 0.0f) {
+                if(end.x > 0.0f)
+                    x.value = 0b1110;       // Ends in Q1
+                else if(end.x >= start.x)
+                    x.value = 0b1111;       // Ends in Q2, crosses all
+            } else if(end.x <= 0.0f)
+                x.value = 0b0010;           // Ends in Q3
+            else
+                x.value = 0b0110;           // Ends in Q4
+        }
+    } else if(start.x < 0.0f) {             // Starts in Q3
+        if(end.y < 0.0f) {
+            if(end.x > 0.0f)
+                x.value = 0b0100;           // Ends in Q4
+            else if(end.x <= start.x)
+                x.value = 0b1111;           // Ends in Q3, crosses all
+        } else if(end.x > 0.0f)
+            x.value = 0b1100;               // Ends in Q1
+        else
+            x.value = 0b1101;               // Ends in Q2
+    } else {                                // Starts in Q4
+        if(end.y < 0.0f) {
+            if(end.x < 0.0f)
+                x.value = 0b1011;           // Ends in Q3
+            else if(end.x <= start.x)
+                x.value = 0b1111;           // Ends in Q4, crosses all
+        } else if(end.x > 0.0f)
+            x.value = 0b1000;               // Ends in Q1
+        else
+            x.value = 0b1001;               // Ends in Q2
+    }
+
+    coord_data_t corner1, corner2;
+
+    memcpy(&corner1, turns > 0 ? position : target, sizeof(coord_data_t));
+    corner1.values[plane.axis_0] = x.neg_x ? center.x - radius : min(position->values[plane.axis_0], target->values[plane.axis_0]);
+    corner1.values[plane.axis_1] = x.neg_y ? center.y - radius : max(position->values[plane.axis_1], target->values[plane.axis_1]);
+
+    if(!grbl.check_travel_limits(corner1.values, sys.soft_limits, true))
+        return false;
+
+    memcpy(&corner2, turns > 0 ? target : position, sizeof(coord_data_t));
+    corner2.values[plane.axis_0] = x.pos_x ? center.x + radius : max(position->values[plane.axis_0], target->values[plane.axis_0]);
+    corner2.values[plane.axis_1] = x.pos_y ? center.y + radius : min(position->values[plane.axis_1], target->values[plane.axis_1]);
+
+   return grbl.check_travel_limits(corner2.values, sys.soft_limits, true);
 }
 
 // Derived from code by Dimitrios Matthes & Vasileios Drakopoulos
@@ -682,6 +785,7 @@ void limits_init (void)
 {
     hal.homing.get_feedrate = get_homing_rate;
     grbl.check_travel_limits = check_travel_limits;
+    grbl.check_arc_travel_limits = check_arc_travel_limits;
     grbl.apply_jog_limits = apply_jog_limits;
     grbl.home_machine = homing_cycle;
 }

@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2023 Terje Io
+  Copyright (c) 2020-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -78,7 +78,9 @@ typedef struct {
 
 typedef bool (*enqueue_gcode_ptr)(char *data);
 typedef bool (*protocol_enqueue_realtime_command_ptr)(char c);
-typedef bool (*travel_limits_ptr)(float *target, bool is_cartesian);
+typedef bool (*travel_limits_ptr)(float *target, axes_signals_t axes, bool is_cartesian);
+typedef bool (*arc_limits_ptr)(coord_data_t *target, coord_data_t *position, point_2d_t center, float radius, plane_t plane, int32_t turns);
+
 typedef void (*jog_limits_ptr)(float *target, float *position);
 typedef bool (*home_machine_ptr)(axes_signals_t cycle, axes_signals_t auto_square);
 
@@ -114,8 +116,6 @@ typedef bool (*on_spindle_select_ptr)(spindle_ptrs_t *spindle);
 typedef void (*on_spindle_selected_ptr)(spindle_ptrs_t *spindle);
 typedef void (*on_gcode_message_ptr)(char *msg);
 typedef void (*on_rt_reports_added_ptr)(report_tracking_flags_t report);
-typedef void (*on_vfs_mount_ptr)(const char *path, const vfs_t *fs);
-typedef void (*on_vfs_unmount_ptr)(const char *path);
 typedef const char *(*on_set_axis_setting_unit_ptr)(setting_id_t setting_id, uint_fast8_t axis_idx);
 typedef status_code_t (*on_file_open_ptr)(const char *fname, vfs_file_t *handle, bool stream);
 typedef status_code_t (*on_unknown_sys_command_ptr)(sys_state_t state, char *line); // return Status_Unhandled.
@@ -124,9 +124,23 @@ typedef sys_commands_t *(*on_get_commands_ptr)(void);
 typedef status_code_t (*on_macro_execute_ptr)(macro_id_t macro); // macro implementations _must_ claim hal.stream.read to stream macros!
 typedef void (*on_macro_return_ptr)(void);
 
+typedef bool (*write_tool_data_ptr)(tool_data_t *tool_data);
+typedef bool (*read_tool_data_ptr)(tool_id_t tool_id, tool_data_t *tool_data);
+typedef bool (*clear_tool_data_ptr)(void);
+
+typedef struct {
+    uint32_t n_tools;
+    tool_data_t *tool;          //!< Array of tool data, size _must_ be n_tools + 1
+    read_tool_data_ptr read;
+    write_tool_data_ptr write;
+    clear_tool_data_ptr clear;
+} tool_table_t;
+
 typedef struct {
     // report entry points set by core at reset.
     report_t report;
+    //
+    tool_table_t tool_table;
     // grbl core events - may be subscribed to by drivers or by the core.
     on_parser_init_ptr on_parser_init;
     on_state_change_ptr on_state_change;
@@ -139,7 +153,7 @@ typedef struct {
     on_execute_realtime_ptr on_execute_delay;
     on_unknown_accessory_override_ptr on_unknown_accessory_override;
     on_report_options_ptr on_report_options;
-    on_report_command_help_ptr on_report_command_help;
+    on_report_command_help_ptr on_report_command_help; //!< Deprecated, use system_register_commands() to register new commands.
     on_rt_reports_added_ptr on_rt_reports_added;
     on_global_settings_restore_ptr on_global_settings_restore;
     on_setting_get_description_ptr on_setting_get_description;
@@ -150,7 +164,7 @@ typedef struct {
     on_unknown_feedback_message_ptr on_unknown_feedback_message;
     on_unknown_realtime_cmd_ptr on_unknown_realtime_cmd;
     on_unknown_sys_command_ptr on_unknown_sys_command;  //!< return Status_Unhandled if not handled.
-    on_get_commands_ptr on_get_commands;
+    on_get_commands_ptr on_get_commands;                //!< Deprecated, use system_register_commands() to register new commands.
     on_user_command_ptr on_user_command;
     on_stream_changed_ptr on_stream_changed;
     on_homing_rate_set_ptr on_homing_rate_set;
@@ -169,12 +183,11 @@ typedef struct {
     on_spindle_select_ptr on_spindle_select;            //!< Called before spindle is selected, hook in HAL overrides here
     on_spindle_selected_ptr on_spindle_selected;        //!< Called when spindle is selected, do not change HAL pointers here!
     on_reset_ptr on_reset;                              //!< Called from interrupt context.
-    on_vfs_mount_ptr on_vfs_mount;                      //!< Called when a file system is mounted.
-    on_vfs_unmount_ptr on_vfs_unmount;                  //!< Called when a file system is unmounted.
     on_file_open_ptr on_file_open;                      //!< Called when a file is opened for streaming.
     // core entry points - set up by core before driver_init() is called.
     home_machine_ptr home_machine;
     travel_limits_ptr check_travel_limits;
+    arc_limits_ptr check_arc_travel_limits;
     jog_limits_ptr apply_jog_limits;
     enqueue_gcode_ptr enqueue_gcode;
     enqueue_realtime_command_ptr enqueue_realtime_command;

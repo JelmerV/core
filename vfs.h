@@ -5,7 +5,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2022-2023 Terje Io
+  Copyright (c) 2022-2024 Terje Io
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -33,9 +33,12 @@
 #include <time.h>
 
 #define vfs_load_plugin(x)
-#define bcopy(src, dest, len) memmove(dest, src, len)
 
-#if !(defined(__time_t_defined) || defined(__MSP432P401R__) || defined(PART_TM4C123GH6PM))
+#ifndef bcopy
+#define bcopy(src, dest, len) memmove(dest, src, len)
+#endif
+
+#if !(defined(__time_t_defined) || defined(_TIME_H_) || defined(__MSP432P401R__) || defined(PART_TM4C123GH6PM))
 typedef struct {
     short date;
     short time;
@@ -77,7 +80,8 @@ typedef struct {
 typedef struct {
     const void *fs;
     size_t size;
-    uint8_t handle; // first byte of file handle structure
+    bool update;
+    uint8_t handle __attribute__ ((aligned (4))); // first byte of file handle structure
 } vfs_file_t;
 
 struct vfs_dir;
@@ -127,7 +131,6 @@ typedef struct
 {
     const char *fs_name;
     bool removable;
-    vfs_st_mode_t mode;
     vfs_open_ptr fopen;
     vfs_close_ptr fclose;
     vfs_read_ptr fread;
@@ -150,10 +153,21 @@ typedef struct
     vfs_format_ptr format;
 } vfs_t;
 
+typedef void (*on_vfs_changed_ptr)(const vfs_t *fs);
+typedef void (*on_vfs_mount_ptr)(const char *path, const vfs_t *fs);
+typedef void (*on_vfs_unmount_ptr)(const char *path);
+
+typedef struct {
+    on_vfs_mount_ptr on_mount;          //!< Called when a file system is mounted.
+    on_vfs_unmount_ptr on_unmount;      //!< Called when a file system is unmounted.
+    on_vfs_changed_ptr on_fs_changed;   //!< Called when file system content is changed.
+} vfs_events_t;
+
 typedef struct vfs_mount
 {
     char path[64];
     const vfs_t *vfs;
+    vfs_st_mode_t mode;
     struct vfs_mount *next;
 } vfs_mount_t;
 
@@ -178,14 +192,15 @@ typedef struct {
 struct vfs_dir {
     const void *fs;
     vfs_mount_ll_entry_t *mounts;
-    uint8_t handle; // must be last!
+    uint8_t handle __attribute__ ((aligned (4))); // must be last!
 };
 
 extern int vfs_errno;
+extern vfs_events_t vfs;
 
 char *vfs_fixpath (char *path);
 
-bool vfs_mount (const char *path, const vfs_t *fs);
+bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode);
 bool vfs_unmount (const char *path);
 vfs_file_t *vfs_open (const char *filename, const char *mode);
 void vfs_close (vfs_file_t *file);
@@ -209,7 +224,7 @@ int vfs_utime (const char *filename, struct tm *modified);
 vfs_free_t *vfs_fgetfree (const char *path);
 
 vfs_drives_t *vfs_drives_open (void);
-vfs_drive_t *vfs_drives_read (vfs_drives_t *handle);
+vfs_drive_t *vfs_drives_read (vfs_drives_t *handle, bool add_hidden);
 void vfs_drives_close (vfs_drives_t *handle);
 vfs_free_t *vfs_drive_getfree (vfs_drive_t *drive);
 int vfs_drive_format (vfs_drive_t *drive);

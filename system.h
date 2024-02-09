@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2023 Terje Io
+  Copyright (c) 2017-2024 Terje Io
   Copyright (c) 2014-2016 Sungeun K. Jeon for Gnea Research LLC
 
   Grbl is free software: you can redistribute it and/or modify
@@ -119,7 +119,7 @@ typedef union {
     };
 } step_control_t;
 
-
+// NOTE: the pin_function_t enum must be kept in sync with any changes!
 typedef union {
     uint16_t value;
     uint16_t mask;
@@ -139,10 +139,9 @@ typedef union {
                  unassigned         :1,
                  probe_overtravel   :1, //! used for probe protection
                  probe_triggered    :1, //! used for probe protection
-                 deasserted         :1; //! this flag is set if signals are deasserted. Note: do NOT pass on to the control_interrupt_handler if set.
+                 deasserted         :1; //! this flag is set if signals are deasserted.
     };
 } control_signals_t;
-
 
 // Define spindle stop override control states.
 typedef union {
@@ -307,17 +306,21 @@ typedef struct system {
     bool mpg_mode;                          //!< To be moved to system_flags_t
     signal_event_t last_event;              //!< Last signal events (control and limits signal).
     int32_t position[N_AXIS];               //!< Real-time machine (aka home) position vector in steps.
+    axes_signals_t hard_limits; //!< temporary?, will be removed when available in settings.
+    axes_signals_t soft_limits; //!< temporary, will be removed when available in settings.
 //@}
 } system_t;
 
 typedef status_code_t (*sys_command_ptr)(sys_state_t state, char *args);
+typedef const char *(*sys_help_ptr)(const char *command);
 
 typedef union {
     uint8_t flags;
     struct {
         uint8_t noargs         :1, //!< System command does not handle arguments.
                 allow_blocking :1, //!< System command can be used when blocking event is active.
-                unused         :6;
+                help_fn        :1,
+                unused         :5;
     };
 } sys_command_flags_t;
 
@@ -326,43 +329,36 @@ typedef struct
     const char *command;
     sys_command_ptr execute;
     sys_command_flags_t flags;
+    union {
+        const char *str;
+        sys_help_ptr fn;
+    } help;
 } sys_command_t;
 
 typedef struct sys_commands_str {
     const uint8_t n_commands;
     const sys_command_t *commands;
-    struct sys_commands_str *(*on_get_commands)(void);
+    struct sys_commands_str *next;
+    struct sys_commands_str *(*on_get_commands)(void); //!< deprecated, to be removed
 } sys_commands_t;
 
 extern system_t sys;
 
-//! Executes an internal system command, defined as a string starting with a '$'
 status_code_t system_execute_line (char *line);
-
-//! Execute the startup script lines stored in non-volatile storage upon initialization
 void system_execute_startup (void);
-
 void system_flag_wco_change (void);
-
-// Returns machine position of axis 'idx'. Must be sent a 'step' array.
-//float system_convert_axis_steps_to_mpos(int32_t *steps, uint_fast8_t idx);
-
-//! Updates a machine 'position' array based on the 'step' array sent.
 void system_convert_array_steps_to_mpos (float *position, int32_t *steps);
-
-//! Checks if XY position is within coordinate system XY with given tolerance.
 bool system_xy_at_fixture (coord_system_id_t id, float tolerance);
-
-//! Raise and report alarm state
 void system_raise_alarm (alarm_code_t alarm);
-
-//! Provide system command help
+void system_init_switches (void);
 void system_command_help (void);
+void system_output_help (const sys_command_t *commands, uint32_t num_commands);
+void system_register_commands (sys_commands_t *commands);
 
 void system_add_rt_report (report_tracking_t report);
 report_tracking_flags_t system_get_rt_report_flags (void);
 
-// Special handlers for setting and clearing Grbl's real-time execution flags.
+// Special handlers for setting and clearing grblHAL's real-time execution flags.
 #define system_set_exec_state_flag(mask) hal.set_bits_atomic(&sys.rt_exec_state, (mask))
 #define system_clear_exec_state_flag(mask) hal.clear_bits_atomic(&sys.rt_exec_state, (mask))
 #define system_clear_exec_states() hal.set_value_atomic(&sys.rt_exec_state, 0)
