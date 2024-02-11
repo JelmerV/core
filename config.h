@@ -241,7 +241,7 @@ When increasing this value, this stores less overall time in the segment buffer 
 certain the step segment buffer is increased/decreased to account for these changes.
 */
 #if !defined ACCELERATION_TICKS_PER_SECOND || defined __DOXYGEN__
-#define ACCELERATION_TICKS_PER_SECOND 100
+#define ACCELERATION_TICKS_PER_SECOND 150
 #endif
 
 // Sets the maximum step rate allowed to be written as a grblHAL setting. This option enables an error
@@ -363,7 +363,7 @@ execution lead time there is for other grblHAL processes have to compute and do 
 before having to come back and refill this buffer, currently at ~50msec of step moves.
 */
 #if !defined SEGMENT_BUFFER_SIZE || defined __DOXYGEN__
-#define SEGMENT_BUFFER_SIZE 10 // Uncomment to override default in stepper.h.
+#define SEGMENT_BUFFER_SIZE 20 // Uncomment to override default in stepper.h.
 #endif
 
 /*! \def SET_CHECK_MODE_PROBE_TO_START
